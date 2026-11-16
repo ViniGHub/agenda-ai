@@ -1,0 +1,28 @@
+[project]
+name = "agenda-ia"
+version = "0.1.0"
+description = "Pergunte em português sobre a sua agenda: RAG com filtro de datas, busca híbrida e citação dos compromissos."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "icalendar>=6.0",
+    "recurring-ical-events>=3.3",
+    "numpy>=1.26",
+    "sentence-transformers>=3.0",
+    "sqlite-vec>=0.1.6",
+    "tzdata>=2024.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

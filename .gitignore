@@ -1,0 +1,17 @@
+# Ambiente e caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# Segredos (a chave do Groq fica só no .env local)
+.env
+
+# Gerados: qualquer um recria rodando a indexação
+dados/
+
+# A sua agenda real nunca entra no git
+agenda_real/
+*.ics
+!exemplos/*.ics

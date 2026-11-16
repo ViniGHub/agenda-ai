@@ -1,0 +1,282 @@
+BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//agenda-ia//agenda de exemplo//PT-BR
+BEGIN:VTIMEZONE
+TZID:America/Sao_Paulo
+COMMENT:This timezone only works from 1970-01-01 to 2038-01-01.
+BEGIN:STANDARD
+DTSTART:19700101T000000
+TZNAME:-03
+TZOFFSETFROM:-0300
+TZOFFSETTO:-0300
+END:STANDARD
+BEGIN:DAYLIGHT
+DTSTART:19851102T010000
+RDATE:19861025T010000,19871025T010000,19881016T010000,19891015T010000,1990
+ 1021T010000,19911020T010000,19921025T010000,19931017T010000,19941016T01000
+ 0,19951015T010000,19961006T010000,19971006T010000,19981011T010000,19991003
+ T010000,20001008T010000,20011014T010000,20021103T010000,20031019T010000,20
+ 041102T010000,20051016T010000,20061105T010000,20071014T010000,20081019T010
+ 000,20091018T010000,20101017T010000,20111016T010000,20121021T010000,201310
+ 20T010000,20141019T010000,20151018T010000,20161016T010000,20171015T010000,
+ 20181104T010000
+TZNAME:-02
+TZOFFSETFROM:-0300
+TZOFFSETTO:-0200
+END:DAYLIGHT
+BEGIN:STANDARD
+DTSTART:19860315T000000
+RDATE:19870214T000000,19880207T000000,19890129T000000,19900211T000000,1991
+ 0217T000000,19920209T000000,19930131T000000,19940220T000000,19950219T00000
+ 0,19960211T000000,19970216T000000,19980301T000000,19990221T000000,20000227
+ T000000,20010218T000000,20020217T000000,20030216T000000,20040215T000000,20
+ 050220T000000,20060219T000000,20070225T000000,20080217T000000,20090215T000
+ 000,20100221T000000,20110220T000000,20120226T000000,20130217T000000,201402
+ 16T000000,20150222T000000,20160221T000000,20170219T000000,20180218T000000,
+ 20190217T000000
+TZNAME:-03
+TZOFFSETFROM:-0200
+TZOFFSETTO:-0300
+END:STANDARD
+END:VTIMEZONE
+BEGIN:VEVENT
+SUMMARY:Daily do time
+DTSTART;TZID=America/Sao_Paulo:20261102T093000
+DTEND;TZID=America/Sao_Paulo:20261102T094500
+DTSTAMP:20260101T000000Z
+UID:exemplo-001@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;BYDAY=MO,TU,WE,TH,FR
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+ATTENDEE:mailto:bruno@example.com
+ATTENDEE;CN="Júlia Rocha":mailto:julia.rocha@example.com
+DESCRIPTION:Status rápido: o que fiz ontem\, o que faço hoje e bloqueios
+ .
+LOCATION:Google Meet
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Academia
+DTSTART;TZID=America/Sao_Paulo:20261102T070000
+DTEND;TZID=America/Sao_Paulo:20261102T080000
+DTSTAMP:20260101T000000Z
+UID:exemplo-002@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;BYDAY=MO,WE,FR
+DESCRIPTION:Treino de força. Levar garrafa de água.
+LOCATION:Academia do bairro
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Aula de inglês
+DTSTART;TZID=America/Sao_Paulo:20261103T190000
+DTEND;TZID=America/Sao_Paulo:20261103T200000
+DTSTAMP:20260101T000000Z
+UID:exemplo-003@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;BYDAY=TU,TH
+ATTENDEE;CN="Laura Smith":mailto:laura.smith@example.com
+DESCRIPTION:Conversação. Preparar uma apresentação curta sobre o proje
+ to atual.
+LOCATION:Online
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:1:1 com a Carla
+DTSTART;TZID=America/Sao_Paulo:20261105T160000
+DTEND;TZID=America/Sao_Paulo:20261105T163000
+DTSTAMP:20260101T000000Z
+UID:exemplo-004@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;INTERVAL=2
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+DESCRIPTION:Conversa de acompanhamento com a gestora: prioridades\, carrei
+ ra e bloqueios.
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Planning da sprint
+DTSTART;TZID=America/Sao_Paulo:20261116T100000
+DTEND;TZID=America/Sao_Paulo:20261116T113000
+DTSTAMP:20260101T000000Z
+UID:exemplo-005@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;INTERVAL=2
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+ATTENDEE:mailto:bruno@example.com
+ATTENDEE;CN="Júlia Rocha":mailto:julia.rocha@example.com
+DESCRIPTION:Definir o escopo da sprint. Trazer as estimativas das tarefas 
+ do app de pedidos.
+LOCATION:Sala Ipê
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Retro da sprint
+DTSTART;TZID=America/Sao_Paulo:20261127T160000
+DTEND;TZID=America/Sao_Paulo:20261127T170000
+DTSTAMP:20260101T000000Z
+UID:exemplo-006@agenda-ia.example.com
+RRULE:FREQ=WEEKLY;UNTIL=20261218T235900;INTERVAL=2
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+ATTENDEE:mailto:bruno@example.com
+ATTENDEE;CN="Júlia Rocha":mailto:julia.rocha@example.com
+DESCRIPTION:O que funcionou\, o que não funcionou e o que vamos mudar.
+LOCATION:Sala Ipê
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Feedback semestral com a Carla
+DTSTART;TZID=America/Sao_Paulo:20261106T150000
+DTEND;TZID=America/Sao_Paulo:20261106T160000
+DTSTAMP:20260101T000000Z
+UID:exemplo-007@agenda-ia.example.com
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+DESCRIPTION:Pontos fortes: comunicação com o cliente e qualidade do cód
+ igo. A melhorar: estimativas de prazo e pedir ajuda mais cedo. Meta para o
+  próximo semestre: liderar a entrega do app de pedidos.
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Happy hour do time
+DTSTART;TZID=America/Sao_Paulo:20261113T183000
+DTEND;TZID=America/Sao_Paulo:20261113T210000
+DTSTAMP:20260101T000000Z
+UID:exemplo-008@agenda-ia.example.com
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+ATTENDEE:mailto:bruno@example.com
+ATTENDEE;CN="Júlia Rocha":mailto:julia.rocha@example.com
+DESCRIPTION:Comemoração da entrega da versão 2.0.
+LOCATION:Bar do Zé\, Vila Madalena
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Dentista
+DTSTART;TZID=America/Sao_Paulo:20261117T080000
+DTEND;TZID=America/Sao_Paulo:20261117T090000
+DTSTAMP:20260101T000000Z
+UID:exemplo-009@agenda-ia.example.com
+ATTENDEE;CN="Dr. Marcos Lima":mailto:marcos.lima@example.com
+DESCRIPTION:Limpeza e avaliação do siso. Chegar 10 minutos antes e levar
+  a carteirinha do convênio.
+LOCATION:Clínica Sorriso\, Rua das Flores\, 120
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Kickoff com a Padaria Pão de Mel
+DTSTART;TZID=America/Sao_Paulo:20261117T140000
+DTEND;TZID=America/Sao_Paulo:20261117T153000
+DTSTAMP:20260101T000000Z
+UID:exemplo-010@agenda-ia.example.com
+ATTENDEE;CN="Rita Oliveira":mailto:rita.oliveira@example.com
+ATTENDEE;CN="Carla Mendes":mailto:carla.mendes@example.com
+DESCRIPTION:Início do app de pedidos da padaria. Levar o protótipo do Fi
+ gma. Dúvidas em aberto: integração com a maquininha de cartão e horár
+ io de corte para encomendas.
+LOCATION:Google Meet
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Almoço com o Bruno
+DTSTART;TZID=America/Sao_Paulo:20261118T120000
+DTEND;TZID=America/Sao_Paulo:20261118T130000
+DTSTAMP:20260101T000000Z
+UID:exemplo-011@agenda-ia.example.com
+ATTENDEE:mailto:bruno@example.com
+DESCRIPTION:Cancelado: ele vai estar de folga.
+LOCATION:Restaurante Sabor Caseiro
+STATUS:CANCELLED
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Call com a PagFácil
+DTSTART;TZID=America/Sao_Paulo:20261118T110000
+DTEND;TZID=America/Sao_Paulo:20261118T114500
+DTSTAMP:20260101T000000Z
+UID:exemplo-012@agenda-ia.example.com
+ATTENDEE;CN="Pedro Santos":mailto:pedro.santos@example.com
+DESCRIPTION:Fornecedor de pagamentos: negociar a taxa do Pix e o prazo de 
+ repasse. Pedir a documentação da API.\n_________________________________
+ _______________________________________________\nReunião do Microsoft Tea
+ ms\nIngressar no computador\, aplicativo móvel ou dispositivo de sala\nht
+ tps://teams.example.com/l/meetup-join/19%3ameeting_exemplo\nID da Reunião
+ : 123 456 789 0\nSenha: exemplo\n
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Entrega do relatório trimestral
+DTSTART;VALUE=DATE:20261119
+DTEND;VALUE=DATE:20261120
+DTSTAMP:20260101T000000Z
+UID:exemplo-013@agenda-ia.example.com
+DESCRIPTION:Prazo final para enviar o relatório de indicadores do trimest
+ re para a diretoria.
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Workshop: RAG na prática
+DTSTART;TZID=America/Sao_Paulo:20261120T140000
+DTEND;TZID=America/Sao_Paulo:20261120T170000
+DTSTAMP:20260101T000000Z
+UID:exemplo-014@agenda-ia.example.com
+DESCRIPTION:Workshop interno sobre busca semântica e embeddings. Levar o 
+ notebook carregado.
+LOCATION:Auditório\, 3º andar
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Aniversário da mãe
+DTSTART;VALUE=DATE:20261121
+DTEND;VALUE=DATE:20261122
+DTSTAMP:20260101T000000Z
+UID:exemplo-015@agenda-ia.example.com
+DESCRIPTION:Almoço em família às 13h. Comprar o presente: livro de rece
+ itas e flores.
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Veterinário da Mia
+DTSTART;TZID=America/Sao_Paulo:20261121T100000
+DTEND;TZID=America/Sao_Paulo:20261121T103000
+DTSTAMP:20260101T000000Z
+UID:exemplo-016@agenda-ia.example.com
+DESCRIPTION:Vacina anual da gata Mia. Levar a carteira de vacinação.
+LOCATION:Clínica Pet Amigo
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Revisão do carro
+DTSTART;TZID=America/Sao_Paulo:20261124T080000
+DTEND;TZID=America/Sao_Paulo:20261124T120000
+DTSTAMP:20260101T000000Z
+UID:exemplo-017@agenda-ia.example.com
+DESCRIPTION:Revisão dos 40 mil km: troca de óleo e das pastilhas de frei
+ o.
+LOCATION:Oficina do Paulo
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Check-up anual
+DTSTART;TZID=America/Sao_Paulo:20261125T073000
+DTEND;TZID=America/Sao_Paulo:20261125T083000
+DTSTAMP:20260101T000000Z
+UID:exemplo-018@agenda-ia.example.com
+DESCRIPTION:Exame de sangue. Jejum de 12 horas.
+LOCATION:Laboratório Vida
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Acompanhamento com a Padaria Pão de Mel
+DTSTART;TZID=America/Sao_Paulo:20261126T140000
+DTEND;TZID=America/Sao_Paulo:20261126T150000
+DTSTAMP:20260101T000000Z
+UID:exemplo-019@agenda-ia.example.com
+ATTENDEE;CN="Rita Oliveira":mailto:rita.oliveira@example.com
+DESCRIPTION:Apresentar a primeira versão do cardápio no app e trazer a r
+ esposta sobre a maquininha.
+LOCATION:Google Meet
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Conferência de front-end em Curitiba
+DTSTART;VALUE=DATE:20261201
+DTEND;VALUE=DATE:20261203
+DTSTAMP:20260101T000000Z
+UID:exemplo-020@agenda-ia.example.com
+DESCRIPTION:Voo às 6h do primeiro dia\; hotel perto do centro de eventos.
+  Palestra sobre acessibilidade às 15h do segundo dia.
+LOCATION:Curitiba
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Consulta com a nutricionista
+DTSTART;TZID=America/Sao_Paulo:20261208T180000
+DTEND;TZID=America/Sao_Paulo:20261208T190000
+DTSTAMP:20260101T000000Z
+UID:exemplo-021@agenda-ia.example.com
+DESCRIPTION:Retorno: levar o diário alimentar das últimas duas semanas.
+LOCATION:Online
+END:VEVENT
+BEGIN:VEVENT
+SUMMARY:Férias
+DTSTART;VALUE=DATE:20261219
+DTEND;VALUE=DATE:20270104
+DTSTAMP:20260101T000000Z
+UID:exemplo-022@agenda-ia.example.com
+DESCRIPTION:Férias de fim de ano. Viagem para a praia com a família.
+END:VEVENT
+END:VCALENDAR
