@@ -1,3 +1,14 @@
+---
+title: Agenda IA
+emoji: 📅
+colorFrom: blue
+colorTo: yellow
+sdk: docker
+app_port: 7860
+pinned: false
+short_description: Perguntas sobre uma agenda, com fontes citadas
+---
+
 # agenda-ia
 
 Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu.
