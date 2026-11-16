@@ -151,7 +151,7 @@ class RateLimiter:
 
 
 def client_id(request: Request) -> str:
-    # Behind the Hugging Face proxy the real client comes first in X-Forwarded-For.
+    # Behind Cloud Run's front end the real client comes first in X-Forwarded-For.
     forwarded = request.headers.get("x-forwarded-for", "")
     return forwarded.split(",")[0].strip() or (request.client.host if request.client else "desconhecido")
 

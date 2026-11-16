@@ -1,0 +1,4 @@
+# What `gcloud run deploy --source .` does not upload (the Docker build then applies .dockerignore).
+.git
+.gcloudignore
+#!include:.gitignore

@@ -1,14 +1,3 @@
----
-title: Agenda IA
-emoji: 📅
-colorFrom: blue
-colorTo: yellow
-sdk: docker
-app_port: 7860
-pinned: false
-short_description: Perguntas sobre uma agenda, com fontes citadas
----
-
 # agenda-ia
 
 Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu.
@@ -107,7 +96,16 @@ cd web && npm run dev                           # http://localhost:5173 (encamin
 
 Sem a variável `AGENDA_ICS`, a API gera a agenda fictícia em volta da semana atual. Com `AGENDA_ICS=agenda_real/minha.ics`, usa a sua (rode só localmente: a aba "Agenda completa" mostra tudo a quem acessar).
 
-Publicação: o [`Dockerfile`](Dockerfile) compila o React e roda a API num container só, no formato do Hugging Face Spaces (porta 7860, usuário 1000). A chave do Groq entra como segredo do Space. Cada visitante pode fazer 20 perguntas a cada 10 minutos, para não esgotar a cota gratuita.
+## Publicação (Google Cloud Run)
+
+O [`Dockerfile`](Dockerfile) compila o React e roda a API num container só; o modelo de embeddings já vai dentro da imagem, então o container não acessa o Hugging Face em produção. O script [`deploy/cloud-run.sh`](deploy/cloud-run.sh), rodado no Cloud Shell, faz tudo:
+
+1. ativa as APIs necessárias;
+2. guarda a chave do Groq no Secret Manager (você digita a chave; ela não aparece na tela);
+3. cria uma conta de serviço que só pode ler esse segredo;
+4. compila a imagem no Cloud Build e publica o serviço.
+
+Configuração pensada para custo zero: escala até zero quando ninguém usa, no máximo 1 instância (teto de gasto mesmo sob abuso) e 20 perguntas por visitante a cada 10 minutos (para não esgotar a cota gratuita do Groq). O preço disso é a partida a frio: depois de um tempo parado, o primeiro acesso leva de 30 a 60 segundos.
 
 A agenda fictícia pode ser conferida em dois formatos: o arquivo bruto [`exemplos/agenda_exemplo.ics`](exemplos/agenda_exemplo.ics) e a versão legível [`exemplos/agenda_exemplo.md`](exemplos/agenda_exemplo.md), que é o gabarito para validar as respostas.
 
@@ -146,4 +144,4 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Resposta com citações validadas e "não encontrei" quando não houver base
 - [ ] Avaliação automática (recall da busca, acerto das datas, fidelidade)
 - [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
-- [ ] Publicação no Hugging Face Spaces
+- [ ] Publicação no Google Cloud Run
