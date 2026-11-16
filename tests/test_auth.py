@@ -5,10 +5,10 @@ import pytest
 from conftest import FakeModel
 from fastapi.testclient import TestClient
 
-from agenda_ia import store
 from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
 from agenda_ia.assistant import Assistant
 from agenda_ia.auth import COOKIE_NAME, AuthSettings
+from agenda_ia.store import SqliteEventStore
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 CLIENT_ID = "123.apps.googleusercontent.com"
@@ -36,9 +36,8 @@ def client(sample_db, fake_embedder):
 
         def new_private(user):
             created.append(user.email)
-            conn = store.connect(":memory:", check_same_thread=False)
-            store.rebuild(conn, [], np.zeros((0, fake_embedder.dim), np.float32), fake_embedder.dim)
-            return Workspace(Assistant(conn, fake_embedder, FakeModel()), "privada", date(2026, 11, 1), date(2027, 1, 31))
+            empty = SqliteEventStore.in_memory([], np.zeros((0, fake_embedder.dim), np.float32), fake_embedder.dim)
+            return Workspace(Assistant(empty, fake_embedder, FakeModel()), "privada", date(2026, 11, 1), date(2027, 1, 31))
 
         return AppState(demo, "fake", new_private)
 

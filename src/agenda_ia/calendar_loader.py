@@ -73,7 +73,12 @@ def format_when(event: Event) -> str:
 
 def load_events(path: str | Path, window_start: date, window_end: date) -> list[Event]:
     """Every occurrence that starts in [window_start, window_end), sorted by start."""
-    calendar = icalendar.Calendar.from_ical(Path(path).read_bytes())
+    return parse_events(Path(path).read_bytes(), window_start, window_end)
+
+
+def parse_events(data: bytes, window_start: date, window_end: date) -> list[Event]:
+    """Same as load_events, from the file's content (e.g. an upload). Raises ValueError if it is not iCalendar."""
+    calendar = icalendar.Calendar.from_ical(data)
     occurrences = recurring_ical_events.of(calendar).between(window_start, window_end)
     events = []
     for component in occurrences:

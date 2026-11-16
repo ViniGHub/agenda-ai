@@ -2,7 +2,6 @@ from datetime import datetime
 
 from conftest import FakeModel
 
-from agenda_ia import store
 from agenda_ia.answering import NOT_CONFIRMED, build_user_prompt, compose
 from agenda_ia.config import TZ
 from agenda_ia.llm import LLMError
@@ -13,7 +12,7 @@ NOW = datetime(2026, 11, 16, 12, 0, tzinfo=TZ)
 def _tuesday(conn):
     start = int(datetime(2026, 11, 17, tzinfo=TZ).timestamp())
     end = int(datetime(2026, 11, 18, tzinfo=TZ).timestamp())
-    return store.events_between(conn, start, end)  # Dentista, Daily, Kickoff, Aula de inglês
+    return conn.events_between(start, end)  # Dentista, Daily, Kickoff, Aula de inglês
 
 
 def test_prompt_numbers_events_and_fences_them(sample_db):

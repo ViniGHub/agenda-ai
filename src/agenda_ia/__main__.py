@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         except LLMError as error:
             sys.exit(str(error))
         now = args.agora.replace(tzinfo=TZ) if args.agora and args.agora.tzinfo is None else args.agora
-        result = Assistant(store.connect(args.db), E5Embedder(), model).ask(args.pergunta, now)
+        result = Assistant(store.SqliteEventStore(store.connect(args.db)), E5Embedder(), model).ask(args.pergunta, now)
         print(result.answer.text)
         if result.answer.cited:
             print("\nFontes:")
@@ -109,7 +109,7 @@ def main(argv: list[str] | None = None) -> None:
     conn = store.connect(args.db)
     start = datetime.combine(args.de, time.min, tzinfo=TZ) if args.de else None
     end = datetime.combine(args.ate + timedelta(days=1), time.min, tzinfo=TZ) if args.ate else None
-    hits = hybrid_search(conn, E5Embedder(), args.pergunta, start, end, k=args.k)
+    hits = hybrid_search(store.SqliteEventStore(conn), E5Embedder(), args.pergunta, start, end, k=args.k)
     if not hits:
         print("Nenhum compromisso encontrado.")
     for position, hit in enumerate(hits, start=1):

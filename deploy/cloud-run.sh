@@ -20,6 +20,7 @@ BUILD_SA="$BUILD_SA_NAME@$PROJECT.iam.gserviceaccount.com"
 GROQ_SECRET="groq-api-key"
 SESSION_SECRET="agenda-ia-sessao"
 ALLOWED_SECRET="agenda-ia-permitidos"
+DB_SECRET="agenda-ia-banco"  # optional: Postgres connection string (Neon); without it the private agenda lives in memory
 
 if [ -z "$PROJECT" ]; then
   echo "Defina o projeto antes: gcloud config set project ID_DO_PROJETO" >&2
@@ -60,11 +61,22 @@ else
   unset ALLOWED
 fi
 
+SECRETS="GROQ_API_KEY=$GROQ_SECRET:latest,AGENDA_IA_SESSAO_SEGREDO=$SESSION_SECRET:latest,AGENDA_IA_PERMITIDOS=$ALLOWED_SECRET:latest"
+APP_SECRETS=("$GROQ_SECRET" "$SESSION_SECRET" "$ALLOWED_SECRET")
+if secret_exists "$DB_SECRET"; then
+  echo "    banco (Neon): configurado, a agenda privada fica guardada"
+  SECRETS="$SECRETS,DATABASE_URL=$DB_SECRET:latest"
+  APP_SECRETS+=("$DB_SECRET")
+else
+  echo "    banco (Neon): não configurado, a agenda privada fica em memória"
+  echo "      para ligar: read -rs URL && printf '%s' \"\$URL\" | gcloud secrets create $DB_SECRET --data-file=- && unset URL"
+fi
+
 echo "3/5 Conta de serviço do app, que só pode ler esses segredos..."
 if ! gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1; then
   gcloud iam service-accounts create "$SA_NAME" --project "$PROJECT" --display-name "agenda-ia (Cloud Run)"
 fi
-for secret in "$GROQ_SECRET" "$SESSION_SECRET" "$ALLOWED_SECRET"; do
+for secret in "${APP_SECRETS[@]}"; do
   gcloud secrets add-iam-policy-binding "$secret" --project "$PROJECT" \
     --member "serviceAccount:$SA" --role roles/secretmanager.secretAccessor >/dev/null
 done
@@ -95,7 +107,7 @@ fi
 gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" --source . \
   --build-service-account "projects/$PROJECT/serviceAccounts/$BUILD_SA" \
   --service-account "$SA" \
-  --set-secrets "GROQ_API_KEY=$GROQ_SECRET:latest,AGENDA_IA_SESSAO_SEGREDO=$SESSION_SECRET:latest,AGENDA_IA_PERMITIDOS=$ALLOWED_SECRET:latest" \
+  --set-secrets "$SECRETS" \
   --memory 2Gi --cpu 1 --cpu-boost --min-instances 0 --max-instances 1 \
   --concurrency 10 --timeout 120 --allow-unauthenticated --quiet "${EXTRA[@]}"
 

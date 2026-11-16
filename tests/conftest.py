@@ -66,10 +66,9 @@ class FakeModel:
 
 @pytest.fixture
 def sample_db(sample_ics, fake_embedder):
-    from agenda_ia import store
+    """The sample agenda in an in-memory SqliteEventStore (shareable across threads, like the API's)."""
     from agenda_ia.calendar_loader import load_events
+    from agenda_ia.store import SqliteEventStore
 
     events = load_events(sample_ics, date(2026, 11, 1), date(2027, 2, 1))
-    conn = store.connect(":memory:", check_same_thread=False)  # the API tests use it from a worker thread
-    store.rebuild(conn, events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)
-    return conn
+    return SqliteEventStore.in_memory(events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)

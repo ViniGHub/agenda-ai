@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time as clock
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 
-from . import store
 from .answering import Answer, compose
 from .config import TZ
 from .embeddings import Embedder
 from .llm import JSONModel, Usage
 from .search import hybrid_search
-from .store import StoredEvent
+from .store import EventStore, StoredEvent
 from .understanding import Query, understand
 
 
@@ -30,9 +28,9 @@ class Result:
 
 
 class Assistant:
-    def __init__(self, conn: sqlite3.Connection, embedder: Embedder, model: JSONModel,
+    def __init__(self, store: EventStore, embedder: Embedder, model: JSONModel,
                  k: int = 5, wide_k: int = 20, list_limit: int = 40):
-        self.conn, self.embedder, self.model = conn, embedder, model
+        self.store, self.embedder, self.model = store, embedder, model
         self.k, self.wide_k, self.list_limit = k, wide_k, list_limit
 
     def ask(self, question: str, now: datetime | None = None) -> Result:
@@ -48,16 +46,16 @@ class Assistant:
         if query.tipo == "buscar":
             # One specific event: best matches, each recurring series once, at its next occurrence.
             strategy = "busca híbrida"
-            hits = hybrid_search(self.conn, self.embedder, query.busca or question, start, end, k=self.k, now=now)
+            hits = hybrid_search(self.store, self.embedder, query.busca or question, start, end, k=self.k, now=now)
             events = [hit.stored for hit in hits]
         elif query.busca:
             # Listing or counting a kind of event: every occurrence counts, in time order.
             strategy = "busca híbrida ampla"
-            hits = hybrid_search(self.conn, self.embedder, query.busca, start, end, k=self.wide_k, collapse_series=False)
+            hits = hybrid_search(self.store, self.embedder, query.busca, start, end, k=self.wide_k, collapse_series=False)
             events = sorted((hit.stored for hit in hits), key=lambda s: s.event.start)
         else:
             strategy = "lista do período"
-            events = store.events_between(self.conn, _ts(start), _ts(end), limit=self.list_limit)
+            events = self.store.events_between(_ts(start), _ts(end), limit=self.list_limit)
 
         answer = compose(self.model, question, events, now, describe_period(start, end))
         usage = Usage(

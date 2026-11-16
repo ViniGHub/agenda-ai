@@ -1,4 +1,14 @@
-"""SQLite storage: one file holds the events, the keyword index (FTS5) and the vectors (sqlite-vec)."""
+"""Event storage.
+
+`EventStore` is what the search and the API need. Two implementations:
+- SqliteEventStore (this module): one SQLite database with FTS5 (words) and sqlite-vec (vectors).
+  Used for the demo agenda, the tests and local runs. Lives in memory or in a file.
+- PostgresEventStore (pgstore.py): Postgres with pgvector, for private agendas that must survive
+  restarts (Neon in production). Every query is scoped to one owner.
+
+Events have an origin: "base" (indexed from an .ics at startup, read-only), "cadastro" (created
+by the person) or "importado" (imported from their .ics). Only the last two can be deleted.
+"""
 
 from __future__ import annotations
 
@@ -6,20 +16,46 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Protocol, Sequence
 
 import numpy as np
 import sqlite_vec
 
 from .calendar_loader import Event
 from .config import TZ
+from .text import query_terms
+
+BASE, CREATED, IMPORTED = "base", "cadastro", "importado"
 
 
 @dataclass(frozen=True)
 class StoredEvent:
     id: int
     event: Event
+    origin: str = BASE
 
+
+class EventStore(Protocol):
+    def vector_search(self, query_vector: np.ndarray, k: int, start_ts: int | None, end_ts: int | None) -> list[int]: ...
+
+    def keyword_search(self, question: str, k: int, start_ts: int | None, end_ts: int | None) -> list[int]: ...
+
+    def get_events(self, ids: Sequence[int]) -> dict[int, StoredEvent]: ...
+
+    def events_between(self, start_ts: int | None, end_ts: int | None, limit: int = 50) -> list[StoredEvent]: ...
+
+    def count(self) -> int: ...
+
+    def add(self, events: Sequence[Event], vectors: np.ndarray, origin: str) -> list[StoredEvent]:
+        """Adds events; one already present (same uid and start) is skipped, not duplicated."""
+        ...
+
+    def delete(self, event_id: int) -> bool:
+        """Deletes an event created or imported by the person. Base events are never deleted."""
+        ...
+
+
+# ---------- SQLite ----------
 
 def connect(path: str | Path, check_same_thread: bool = True) -> sqlite3.Connection:
     """check_same_thread=False lets a web server's worker threads share it (callers must serialize writes)."""
@@ -55,7 +91,8 @@ def rebuild(conn: sqlite3.Connection, events: Sequence[Event], vectors: np.ndarr
                 all_day integer not null,
                 location text not null,
                 attendees text not null,
-                description text not null
+                description text not null,
+                origin text not null default 'base'
             );
             create index events_start on events(start_ts);
             -- remove_diacritics: "reuniao" finds "reunião"
@@ -69,24 +106,37 @@ def rebuild(conn: sqlite3.Connection, events: Sequence[Event], vectors: np.ndarr
         conn.execute(f"create virtual table events_vec using vec0(embedding float[{int(dim)}], start_ts integer)")
         conn.execute("insert into meta values ('dim', ?)", (str(dim),))
         for event, vector in zip(events, vectors):
-            cur = conn.execute(
-                """insert into events (key, uid, title, start_ts, end_ts, all_day, location, attendees, description)
-                   values (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    event.key, event.uid, event.title,
-                    int(event.start.timestamp()), int(event.end.timestamp()), int(event.all_day),
-                    event.location, "; ".join(event.attendees), event.description,
-                ),
-            )
-            row_id = cur.lastrowid
-            conn.execute(
-                "insert into events_fts (rowid, title, location, attendees, description) values (?, ?, ?, ?, ?)",
-                (row_id, event.title, event.location, ", ".join(event.attendees), event.description),
-            )
-            conn.execute(
-                "insert into events_vec (rowid, embedding, start_ts) values (?, ?, ?)",
-                (row_id, np.asarray(vector, dtype=np.float32).tobytes(), int(event.start.timestamp())),
-            )
+            _insert(conn, event, vector, BASE)
+
+
+def _insert(conn: sqlite3.Connection, event: Event, vector: np.ndarray, origin: str) -> int | None:
+    cur = conn.execute(
+        """insert or ignore into events
+           (key, uid, title, start_ts, end_ts, all_day, location, attendees, description, origin)
+           values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            event.key, event.uid, event.title,
+            int(event.start.timestamp()), int(event.end.timestamp()), int(event.all_day),
+            event.location, "; ".join(event.attendees), event.description, origin,
+        ),
+    )
+    if cur.rowcount == 0:  # same uid and start already stored
+        return None
+    row_id = cur.lastrowid
+    conn.execute(
+        "insert into events_fts (rowid, title, location, attendees, description) values (?, ?, ?, ?, ?)",
+        (row_id, event.title, event.location, ", ".join(event.attendees), event.description),
+    )
+    conn.execute(
+        "insert into events_vec (rowid, embedding, start_ts) values (?, ?, ?)",
+        (row_id, np.asarray(vector, dtype=np.float32).tobytes(), int(event.start.timestamp())),
+    )
+    return row_id
+
+
+def fts_query(question: str) -> str:
+    """A safe FTS5 query: each term as a quoted prefix, joined with OR."""
+    return " OR ".join(f'"{term}"*' for term in query_terms(question))
 
 
 def vector_search(
@@ -163,4 +213,54 @@ def _row_to_stored(row: sqlite3.Row) -> StoredEvent:
         attendees=tuple(a for a in row["attendees"].split("; ") if a),
         description=row["description"],
     )
-    return StoredEvent(id=row["id"], event=event)
+    return StoredEvent(id=row["id"], event=event, origin=row["origin"])
+
+
+class SqliteEventStore:
+    """EventStore over one SQLite connection (callers serialize access when threads share it)."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self.conn = conn
+
+    @classmethod
+    def in_memory(cls, events: Sequence[Event], vectors: np.ndarray, dim: int) -> "SqliteEventStore":
+        conn = connect(":memory:", check_same_thread=False)
+        rebuild(conn, events, vectors, dim)
+        return cls(conn)
+
+    def clone(self) -> "SqliteEventStore":
+        """A private copy of the whole database (events, word index and vectors), in memory."""
+        copy = connect(":memory:", check_same_thread=False)
+        self.conn.backup(copy)
+        return SqliteEventStore(copy)
+
+    def vector_search(self, query_vector, k, start_ts, end_ts):
+        return vector_search(self.conn, query_vector, k, start_ts, end_ts)
+
+    def keyword_search(self, question, k, start_ts, end_ts):
+        return keyword_search(self.conn, fts_query(question), k, start_ts, end_ts)
+
+    def get_events(self, ids):
+        return get_events(self.conn, ids)
+
+    def events_between(self, start_ts, end_ts, limit=50):
+        return events_between(self.conn, start_ts, end_ts, limit)
+
+    def count(self):
+        return count_events(self.conn)
+
+    def add(self, events, vectors, origin):
+        if len(events) != len(vectors):
+            raise ValueError("cada evento precisa de um vetor")
+        with self.conn:
+            ids = [_insert(self.conn, event, vector, origin) for event, vector in zip(events, vectors)]
+        return list(self.get_events([i for i in ids if i is not None]).values())
+
+    def delete(self, event_id):
+        with self.conn:
+            cur = self.conn.execute("delete from events where id = ? and origin != ?", (event_id, BASE))
+            if cur.rowcount == 0:
+                return False
+            self.conn.execute("delete from events_fts where rowid = ?", (event_id,))
+            self.conn.execute("delete from events_vec where rowid = ?", (event_id,))
+        return True
