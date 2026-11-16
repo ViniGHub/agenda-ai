@@ -114,6 +114,8 @@ A agenda fictícia é gerada em volta da semana atual sempre que a API liga. Par
 
 ## Publicação (Google Cloud Run)
 
+O guia completo, com cada peça da nuvem, os fluxos, os custos e o passo a passo para replicar do zero, está em [`docs/infraestrutura.md`](docs/infraestrutura.md).
+
 O [`Dockerfile`](Dockerfile) compila o React e roda a API num container só; o modelo de embeddings já vai dentro da imagem, então o container não acessa o Hugging Face em produção. O script [`deploy/cloud-run.sh`](deploy/cloud-run.sh), rodado no Cloud Shell, faz tudo:
 
 1. ativa as APIs necessárias;

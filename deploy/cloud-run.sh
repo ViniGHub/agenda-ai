@@ -54,8 +54,9 @@ if secret_exists "$ALLOWED_SECRET"; then
   echo "    e-mails com acesso: já existe (para trocar: gcloud secrets versions add $ALLOWED_SECRET --data-file=-)"
 else
   # Fica fora do repositório público: é a lista de quem entra na área privada.
-  read -rp "    E-mails com acesso à área privada (separados por vírgula): " ALLOWED
-  printf '%s' "$ALLOWED" | create_secret "$ALLOWED_SECRET"
+  read -rp "    E-mails com acesso à área privada (separados por vírgula; vazio = ninguém): " ALLOWED
+  # Secret Manager does not store empty values; "ninguem" is not an e-mail, so nobody gets in.
+  printf '%s' "${ALLOWED:-ninguem}" | create_secret "$ALLOWED_SECRET"
   unset ALLOWED
 fi
 
