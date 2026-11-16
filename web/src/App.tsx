@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Button } from '@/components/ui/button'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { askQuestion, getAgenda, getStatus } from './api'
 import { AgendaPanel } from './components/AgendaPanel'
 import { Chat, type ChatMessage } from './components/Chat'
@@ -13,7 +15,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pending, setPending] = useState(false)
-  const [selectedId, setSelectedId] = useState<number | null>(null) // answer shown in the side panel
+  const [selectedId, setSelectedId] = useState<number | null>(null) // answer shown on the right page
   const [tab, setTab] = useState<Tab>('detalhes')
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
   const nextId = useRef(1)
@@ -59,79 +61,103 @@ export default function App() {
   const citedIds = new Set(selectedAnswer?.fontes.map((f) => f.id) ?? [])
 
   return (
-    <div className="page">
-      <header className="header">
+    <div className="mx-auto flex min-h-dvh max-w-[1280px] flex-col gap-5 px-4 py-6 sm:px-6 lg:h-dvh">
+      <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
         <div>
-          <h1>📅 Agenda IA</h1>
-          <p className="subtitle">
-            Pergunte em português sobre a agenda e receba a resposta citando os compromissos de onde ela saiu.
+          <h1 className="font-heading text-[2.6rem] leading-none font-semibold tracking-tight [font-variation-settings:'SOFT'_100,'WONK'_1] sm:text-5xl">
+            Agenda <em className="font-medium text-primary">ia</em>
+          </h1>
+          <p className="mt-2 max-w-xl text-muted-foreground">
+            Pergunte em português. Cada resposta diz de qual compromisso saiu.
           </p>
         </div>
-        <StatusBadge status={status} />
+        <div className="flex flex-col items-start gap-2 sm:items-end">
+          <StatusStamp status={status} />
+          {status?.origem === 'exemplo' && (
+            <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-primary sm:-rotate-1 sm:text-right">
+              agenda fictícia, refeita em volta desta semana. não escreva dados pessoais: a pergunta vai para um modelo de linguagem.
+            </p>
+          )}
+        </div>
       </header>
 
       {loadError && (
-        <div className="banner banner-error" role="alert">
-          {loadError} <button onClick={load}>Tentar de novo</button>
-        </div>
-      )}
-      {status && status.origem === 'exemplo' && (
-        <div className="banner">
-          A agenda é <strong>fictícia</strong> e é gerada em volta da semana atual, para que perguntas como “o que tenho
-          amanhã?” sempre tenham resposta. Não escreva dados pessoais: a pergunta é enviada a um modelo de linguagem.
-        </div>
+        <p role="alert" className="flex flex-wrap items-center gap-3 font-hand text-[1.35rem] text-primary">
+          {loadError}
+          <Button variant="outline" size="sm" onClick={load} className="font-sans">
+            Tentar de novo
+          </Button>
+        </p>
       )}
       {status && !status.llm && (
-        <div className="banner banner-warning">
-          O modelo de linguagem não está configurado: as respostas mostram só os compromissos mais próximos da pergunta.
-        </div>
+        <p className="font-hand text-[1.35rem] text-primary">
+          o modelo de linguagem não está configurado: as respostas mostram só os compromissos mais próximos da pergunta.
+        </p>
       )}
 
-      <main className="layout">
-        <Chat
-          messages={messages}
-          pending={pending}
-          disabled={!status}
-          selectedId={selectedId}
-          onSend={send}
-          onSelect={(id) => {
-            setSelectedId(id)
-            setTab('detalhes')
-          }}
-          onShowEvent={showEvent}
-        />
+      {/* The notebook, open: conversation on the left page, its explanation on the right. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-[10px] bg-card shadow-[0_1px_0_var(--border),0_24px_48px_-24px_rgb(0_0_0/0.45)] ring-1 ring-border lg:grid-cols-[1.15fr_1fr]">
+        <div className="flex min-h-0 flex-col lg:shadow-[inset_-22px_0_26px_-26px_rgb(0_0_0/0.4)]">
+          <Chat
+            messages={messages}
+            pending={pending}
+            disabled={!status}
+            selectedId={selectedId}
+            onSend={send}
+            onSelect={(id) => {
+              setSelectedId(id)
+              setTab('detalhes')
+            }}
+            onShowEvent={showEvent}
+          />
+        </div>
 
-        <aside className="side">
-          <div className="tabs" role="tablist">
-            <button role="tab" aria-selected={tab === 'detalhes'} onClick={() => setTab('detalhes')}>
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setTab(value as Tab)}
+          className="min-h-[32rem] gap-0 border-t border-border lg:min-h-0 lg:border-t-0 lg:border-l lg:shadow-[inset_22px_0_26px_-26px_rgb(0_0_0/0.35)]"
+        >
+          <TabsList variant="line" className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-card px-6 pt-3 pb-0">
+            <TabsTrigger value="detalhes" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
               Como foi respondido
-            </button>
-            <button role="tab" aria-selected={tab === 'agenda'} onClick={() => setTab('agenda')}>
-              Agenda completa{agenda.length > 0 && ` (${agenda.length})`}
-            </button>
-          </div>
-          {tab === 'detalhes' ? (
+            </TabsTrigger>
+            <TabsTrigger value="agenda" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
+              Agenda
+              {agenda.length > 0 && <span className="font-mono text-[11px] text-pencil">{agenda.length}</span>}
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="detalhes" className="paper-plain min-h-0 flex-1">
             <DetailsPanel answer={selectedAnswer} onShowEvent={showEvent} />
-          ) : (
+          </TabsContent>
+          <TabsContent value="agenda" className="min-h-0 flex-1">
             <AgendaPanel events={agenda} citedIds={citedIds} focusedEventId={focusedEventId} />
-          )}
-        </aside>
+          </TabsContent>
+        </Tabs>
       </main>
 
-      <footer className="footer">
-        Busca híbrida (embeddings locais + BM25) com filtro de datas, resposta do <code>gpt-oss-120b</code> no Groq e
-        citações conferidas em código.
+      <footer className="flex flex-wrap justify-between gap-x-6 gap-y-1 font-mono text-[11px] tracking-wide text-pencil">
+        <span>busca híbrida (embeddings locais + BM25) · gpt-oss-120b no Groq · citações conferidas em código</span>
+        <span>
+          <a className="underline-offset-2 hover:underline" href="https://github.com/ViniGHub/agenda-ai">código no GitHub</a>
+          {' · '}animações adaptadas de{' '}
+          <a className="underline-offset-2 hover:underline" href="https://skiper-ui.com" target="_blank" rel="noreferrer">
+            Skiper UI
+          </a>
+        </span>
       </footer>
     </div>
   )
 }
 
-function StatusBadge({ status }: { status: Status | null }) {
-  if (!status) return <span className="badge">Conectando…</span>
-  const source = status.origem === 'exemplo' ? 'Agenda fictícia' : 'Agenda do arquivo'
+function StatusStamp({ status }: { status: Status | null }) {
+  if (!status) return <span className="stamp px-2 py-1 text-[11px] text-pencil">conectando…</span>
+  const source = status.origem === 'exemplo' ? 'agenda fictícia' : 'agenda do arquivo'
   return (
-    <span className="badge" title={status.modelo ?? 'sem modelo de linguagem'}>
-      {source} · {status.eventos} compromissos · {status.llm ? 'LLM ativo' : 'só busca'}
+    <span
+      className="stamp -rotate-2 px-2 py-1 text-[10px] whitespace-nowrap text-primary sm:text-[11px]"
+      title={status.modelo ?? 'sem modelo de linguagem'}
+    >
+      {source} · {status.eventos} itens · {status.llm ? 'llm ativo' : 'só busca'}
     </span>
   )
 }

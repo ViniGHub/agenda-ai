@@ -15,12 +15,14 @@ export function AnswerText({ text }: { text: string }) {
   }
 
   return (
-    <div className="answer-text">
+    <div className="text-[15px] leading-[var(--line)] text-foreground">
       {blocks.map((block, index) =>
         block.kind === 'ul' ? (
-          <ul key={index}>
+          <ul key={index} className="list-none">
             {block.lines.map((line, i) => (
-              <li key={i}>{line}</li>
+              <li key={i} className="relative pl-5 before:absolute before:left-0 before:font-hand before:text-lg before:text-primary before:content-['–']">
+                {line}
+              </li>
             ))}
           </ul>
         ) : (

@@ -6,7 +6,9 @@ Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o 
 
 > Em construção. Pronto: indexação, busca híbrida, resposta com o LLM e interface web (React + FastAPI). Falta: avaliação automática.
 
-A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda completa" é o gabarito para conferir.
+A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
+
+O visual é o de um caderno aberto: a pergunta aparece em letra de mão, a resposta é digitada sobre as linhas, as fontes ficam em marca-texto e o compromisso clicado aparece circulado na agenda. Feito com Tailwind CSS e componentes [shadcn/ui](https://ui.shadcn.com) (abas, botão, tooltip), tipografia Fraunces, IBM Plex e Caveat, e dois componentes do [Skiper UI](https://skiper-ui.com) adaptados (o cursor suave do campo de pergunta e o sublinhado animado dos links).
 
 ## Por que não é "só um RAG"
 
