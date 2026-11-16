@@ -5,12 +5,13 @@ import type { AgendaEvent } from '../types'
 
 interface Props {
   events: AgendaEvent[]
+  loaded: boolean
   citedIds: Set<number>
   focusedEventId: number | null
 }
 
 /** The whole agenda, day by day, like a planner: the answer key to check what the assistant says. */
-export function AgendaPanel({ events, citedIds, focusedEventId }: Props) {
+export function AgendaPanel({ events, loaded, citedIds, focusedEventId }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef(new Map<number, HTMLLIElement>())
   const todayKey = dayKey(new Date().toISOString())
@@ -33,7 +34,11 @@ export function AgendaPanel({ events, citedIds, focusedEventId }: Props) {
   }, [focusedEventId, todayKey, days])
 
   if (events.length === 0) {
-    return <p className="px-6 py-[var(--line)] font-hand text-[1.4rem] text-pencil">abrindo a agenda…</p>
+    return (
+      <p className="px-6 py-[var(--line)] font-hand text-[1.4rem] text-pencil">
+        {loaded ? 'nenhum compromisso por aqui ainda.' : 'abrindo a agenda…'}
+      </p>
+    )
   }
 
   return (

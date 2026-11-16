@@ -1,8 +1,12 @@
 """HTTP layer (FastAPI). It only translates HTTP <-> Assistant; the RAG logic lives in the other modules.
 
     uvicorn agenda_ia.api:app --port 8000           # API (and the built React app, if web/dist exists)
-    AGENDA_ICS=agenda_real/minha.ics uvicorn ...    # your own agenda, locally
 
+Two workspaces share the same question pipeline:
+  /api/demo/...   the fictitious agenda, open to anyone (built around the current week at startup)
+  /api/minha/...  the signed-in person's own agenda (Google sign-in + allowlist, see auth.py)
+
+Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into the private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
 
@@ -19,12 +23,14 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, HTTPException, Request
+import numpy as np
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import store
 from .assistant import Assistant
+from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, SESSION_SECONDS, AuthError, AuthSettings, User
 from .calendar_loader import format_when, load_events
 from .config import ROOT, TZ
 from .llm import LLMError, UnavailableModel
@@ -74,13 +80,28 @@ class QuestionIn(BaseModel):
 
 
 class StatusOut(BaseModel):
-    origem: str  # "exemplo" (fictitious, rebuilt around today) or "arquivo" (AGENDA_ICS)
+    origem: str  # "exemplo" (fictitious), "arquivo" (AGENDA_ICS) or "privada" (empty private agenda)
     eventos: int
     de: date
     ate: date
     llm: bool
     modelo: str | None
     agora: datetime
+
+
+class ConfigOut(BaseModel):
+    login: bool
+    google_client_id: str | None
+
+
+class MeOut(BaseModel):
+    logado: bool
+    nome: str | None = None
+    email: str | None = None
+
+
+class LoginIn(BaseModel):
+    credential: str = Field(min_length=10, max_length=8192)
 
 
 def event_out(stored: StoredEvent) -> EventOut:
@@ -94,40 +115,60 @@ def event_out(stored: StoredEvent) -> EventOut:
 # ---------- state ----------
 
 @dataclass
-class AppState:
+class Workspace:
     assistant: Assistant
     origin: str
     first_day: date
     last_day: date
+
+
+@dataclass
+class AppState:
+    demo: Workspace
     llm_model: str | None
+    new_private: Callable[[User], Workspace]
+    private: dict[str, Workspace] = field(default_factory=dict)
+    # One lock for everything: the SQLite connections are shared between threads, and the
+    # LLM quota (tokens per minute) is shared by every workspace anyway.
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def private_for(self, user: User) -> Workspace:
+        key = user.sub or user.email
+        if key not in self.private:
+            self.private[key] = self.new_private(user)
+        return self.private[key]
 
 
 def load_state() -> AppState:
-    """Indexes the agenda in memory at startup (nothing is written on the server)."""
+    """Loads the model once and indexes the demo agenda in memory (nothing is written on the server)."""
     from .embeddings import E5Embedder
     from .llm import GroqModel
     from .sample import build as build_sample
 
     today = datetime.now(TZ).date()
     first_day, last_day = today - timedelta(days=60), today + timedelta(days=120)
-    if os.getenv("AGENDA_ICS"):
-        path, origin = Path(os.environ["AGENDA_ICS"]), "arquivo"
-    else:
-        path, origin = Path(tempfile.gettempdir()) / "agenda_ia_exemplo.ics", "exemplo"
-        path.write_bytes(build_sample(today).to_ical())
-
-    events = load_events(path, first_day, last_day + timedelta(days=1))
     embedder = E5Embedder()
-    conn = store.connect(":memory:", check_same_thread=False)
-    store.rebuild(conn, events, embedder.passages([e.search_text() for e in events]), embedder.dim)
-
     try:
         model = GroqModel()
         llm_model = model.model
     except LLMError as error:
         model, llm_model = UnavailableModel(str(error)), None
-    return AppState(Assistant(conn, embedder, model), origin, first_day, last_day, llm_model)
+
+    def workspace(path: Path | None, origin: str) -> Workspace:
+        events = load_events(path, first_day, last_day + timedelta(days=1)) if path else []
+        vectors = embedder.passages([e.search_text() for e in events]) if events else np.zeros((0, embedder.dim), np.float32)
+        conn = store.connect(":memory:", check_same_thread=False)
+        store.rebuild(conn, events, vectors, embedder.dim)
+        return Workspace(Assistant(conn, embedder, model), origin, first_day, last_day)
+
+    sample_path = Path(tempfile.gettempdir()) / "agenda_ia_exemplo.ics"
+    sample_path.write_bytes(build_sample(today).to_ical())
+    demo = workspace(sample_path, "exemplo")
+
+    # Private agendas live in memory for now (persistence comes with the database).
+    # Locally, AGENDA_ICS fills the private agenda with your real calendar.
+    own_ics = Path(os.environ["AGENDA_ICS"]) if os.getenv("AGENDA_ICS") else None
+    return AppState(demo, llm_model, lambda user: workspace(own_ics, "arquivo" if own_ics else "privada"))
 
 
 class RateLimiter:
@@ -158,42 +199,60 @@ def client_id(request: Request) -> str:
 
 # ---------- app ----------
 
-def create_app(load: Callable[[], AppState] = load_state, limiter: RateLimiter | None = None) -> FastAPI:
+def create_app(
+    load: Callable[[], AppState] = load_state,
+    limiter: RateLimiter | None = None,
+    auth: AuthSettings | None = None,
+) -> FastAPI:
+    from dotenv import load_dotenv
+
+    load_dotenv(ROOT / ".env")  # local development only; in production the variables come from Cloud Run
     limiter = limiter or RateLimiter(int(os.getenv("AGENDA_IA_LIMITE", "20")), 600)
+    login_limiter = RateLimiter(10, 600)
+    auth = auth or AuthSettings.from_env()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.agenda = load()
         yield
 
-    app = FastAPI(title="agenda-ia", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="agenda-ia", version="0.2.0", lifespan=lifespan)
 
     def state(request: Request) -> AppState:
         return request.app.state.agenda
 
-    @app.get("/api/status", response_model=StatusOut)
-    def get_status(request: Request) -> StatusOut:
-        s = state(request)
-        with s.lock:
-            total = store.count_events(s.assistant.conn)
-        return StatusOut(
-            origem=s.origin, eventos=total, de=s.first_day, ate=s.last_day,
-            llm=s.llm_model is not None, modelo=s.llm_model, agora=datetime.now(TZ),
-        )
+    def same_site_only(request: Request) -> None:
+        # Cookie-authenticated POSTs must carry a custom header. A page on another site cannot add it
+        # without a CORS preflight, which this API never approves, so cross-site requests stop here.
+        if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
+            raise HTTPException(403, "Requisição recusada.")
 
-    @app.get("/api/agenda", response_model=list[EventOut])
-    def get_agenda(request: Request) -> list[EventOut]:
-        s = state(request)
-        with s.lock:
-            return [event_out(e) for e in store.events_between(s.assistant.conn, None, None, limit=100_000)]
+    def current_user(request: Request) -> User | None:
+        return auth.user_from_cookie(request.cookies.get(COOKIE_NAME))
 
-    @app.post("/api/perguntar", response_model=AnswerOut)
-    def ask(body: QuestionIn, request: Request) -> AnswerOut:
+    def require_user(request: Request) -> User:
+        user = current_user(request)
+        if user is None:
+            raise HTTPException(401, "Entre com a sua conta para ver a sua agenda.")
+        return user
+
+    # ----- shared handlers -----
+
+    def status_of(s: AppState, ws: Workspace) -> StatusOut:
+        with s.lock:
+            total = store.count_events(ws.assistant.conn)
+        return StatusOut(origem=ws.origin, eventos=total, de=ws.first_day, ate=ws.last_day,
+                         llm=s.llm_model is not None, modelo=s.llm_model, agora=datetime.now(TZ))
+
+    def agenda_of(s: AppState, ws: Workspace) -> list[EventOut]:
+        with s.lock:
+            return [event_out(e) for e in store.events_between(ws.assistant.conn, None, None, limit=100_000)]
+
+    def answer_in(s: AppState, ws: Workspace, body: QuestionIn, request: Request) -> AnswerOut:
         if not limiter.allow(client_id(request)):
-            raise HTTPException(429, "Limite da demonstração atingido. Tente de novo em alguns minutos.")
-        s = state(request)
-        with s.lock:  # one question at a time: shared SQLite connection and a per-minute token quota
-            r = s.assistant.ask(body.pergunta.strip())
+            raise HTTPException(429, "Limite de perguntas atingido. Tente de novo em alguns minutos.")
+        with s.lock:  # one question at a time: shared SQLite connections and a per-minute token quota
+            r = ws.assistant.ask(body.pergunta.strip())
         return AnswerOut(
             resposta=r.answer.text,
             encontrou=r.answer.found,
@@ -204,6 +263,74 @@ def create_app(load: Callable[[], AppState] = load_state, limiter: RateLimiter |
                 tokens=r.usage.total, chamadas=r.usage.calls, segundos=round(r.seconds, 2),
             ),
         )
+
+    # ----- session -----
+
+    @app.get("/api/config", response_model=ConfigOut)
+    def get_config() -> ConfigOut:
+        return ConfigOut(login=auth.enabled, google_client_id=auth.client_id if auth.enabled else None)
+
+    @app.get("/api/me", response_model=MeOut)
+    def get_me(request: Request) -> MeOut:
+        user = current_user(request)
+        return MeOut(logado=True, nome=user.name, email=user.email) if user else MeOut(logado=False)
+
+    @app.post("/api/login", response_model=MeOut, dependencies=[Depends(same_site_only)])
+    def login(body: LoginIn, request: Request, response: Response) -> MeOut:
+        if not login_limiter.allow(client_id(request)):
+            raise HTTPException(429, "Muitas tentativas de login. Tente de novo em alguns minutos.")
+        try:
+            user = auth.login(body.credential)
+        except AuthError as error:
+            raise HTTPException(error.status, error.message)
+        response.set_cookie(
+            COOKIE_NAME, auth.cookie_for(user), max_age=SESSION_SECONDS,
+            httponly=True, secure=True, samesite="lax", path="/",
+        )
+        return MeOut(logado=True, nome=user.name, email=user.email)
+
+    @app.post("/api/logout", response_model=MeOut, dependencies=[Depends(same_site_only)])
+    def logout(response: Response) -> MeOut:
+        response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+        return MeOut(logado=False)
+
+    # ----- demo workspace (open) -----
+
+    @app.get("/api/demo/status", response_model=StatusOut)
+    def demo_status(request: Request) -> StatusOut:
+        s = state(request)
+        return status_of(s, s.demo)
+
+    @app.get("/api/demo/agenda", response_model=list[EventOut])
+    def demo_agenda(request: Request) -> list[EventOut]:
+        s = state(request)
+        return agenda_of(s, s.demo)
+
+    @app.post("/api/demo/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
+    def demo_ask(body: QuestionIn, request: Request) -> AnswerOut:
+        s = state(request)
+        return answer_in(s, s.demo, body, request)
+
+    # ----- private workspace (signed in) -----
+
+    def private_workspace(s: AppState, user: User) -> Workspace:
+        with s.lock:
+            return s.private_for(user)
+
+    @app.get("/api/minha/status", response_model=StatusOut)
+    def own_status(request: Request, user: User = Depends(require_user)) -> StatusOut:
+        s = state(request)
+        return status_of(s, private_workspace(s, user))
+
+    @app.get("/api/minha/agenda", response_model=list[EventOut])
+    def own_agenda(request: Request, user: User = Depends(require_user)) -> list[EventOut]:
+        s = state(request)
+        return agenda_of(s, private_workspace(s, user))
+
+    @app.post("/api/minha/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
+    def own_ask(body: QuestionIn, request: Request, user: User = Depends(require_user)) -> AnswerOut:
+        s = state(request)
+        return answer_in(s, private_workspace(s, user), body, request)
 
     if WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

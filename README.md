@@ -37,8 +37,20 @@ pergunta
   3. responder (LLM): só com os compromissos numerados, citando os números → validação em código
 
 web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
-     POST /api/perguntar · GET /api/agenda · GET /api/status
+     /api/demo/...   agenda fictícia, aberta (status, agenda, perguntar)
+     /api/minha/...  agenda de quem entrou com o Google (mesmas rotas, exigem sessão)
+     /api/login · /api/logout · /api/me · /api/config
 ```
+
+## Login e modo teste
+
+A capa do site tem dois caminhos: **"Testar com a agenda fictícia"**, sem conta, e **"Entrar com Google"**, para a agenda privada, que só abre para os e-mails autorizados.
+
+- O botão oficial do Google devolve um ID token (JWT assinado pelo Google). A API confere a assinatura, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`auth.py`](src/agenda_ia/auth.py)).
+- Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 8 horas. O token do Google não é guardado.
+- Toda requisição `POST` precisa do cabeçalho `X-Requested-With: agenda-ia`. Um site de terceiros não consegue enviá-lo sem uma liberação de CORS que esta API nunca dá, o que barra ataques de CSRF.
+- A lista de permitidos e a chave que assina os cookies ficam no Secret Manager, nunca no repositório. Quem sai da lista perde o acesso mesmo com um cookie ainda válido.
+- Por enquanto a agenda privada fica em memória e começa vazia. A próxima etapa é guardá-la num banco (Postgres com pgvector no Neon), importar o `.ics` e cadastrar compromissos.
 
 O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`api.py`](src/agenda_ia/api.py) e os tipos espelhados em [`web/src/types.ts`](web/src/types.ts). Em produção, o FastAPI serve o React já compilado, então é uma origem só (sem CORS) e a chave do Groq nunca chega ao navegador.
 
@@ -84,7 +96,7 @@ python -m agenda_ia buscar "padaria" --de 2026-11-23 --ate 2026-11-29
 # --agora finge a data atual, para a agenda de exemplo (que é da semana de 16/11/2026)
 python -m agenda_ia perguntar "o que tenho amanhã?" --agora 2026-11-16T12:00 -v
 
-pytest                                          # 38 testes, sem rede: o LLM e os embeddings são simulados
+pytest                                          # 50 testes, sem rede: o LLM, os embeddings e o Google são simulados
 ```
 
 Interface web (requer Node 20 ou mais novo):
@@ -98,16 +110,16 @@ uvicorn agenda_ia.api:app --port 8000           # abre em http://localhost:8000
 cd web && npm run dev                           # http://localhost:5173 (encaminha /api para a porta 8000)
 ```
 
-Sem a variável `AGENDA_ICS`, a API gera a agenda fictícia em volta da semana atual. Com `AGENDA_ICS=agenda_real/minha.ics`, usa a sua (rode só localmente: a aba "Agenda completa" mostra tudo a quem acessar).
+A agenda fictícia é gerada em volta da semana atual sempre que a API liga. Para testar o login localmente, ponha no `.env` o `GOOGLE_CLIENT_ID` (com `http://localhost:8000` entre as origens autorizadas do cliente OAuth) e o seu e-mail em `AGENDA_IA_PERMITIDOS`; com `AGENDA_ICS=agenda_real/minha.ics`, a sua agenda real aparece na área privada.
 
 ## Publicação (Google Cloud Run)
 
 O [`Dockerfile`](Dockerfile) compila o React e roda a API num container só; o modelo de embeddings já vai dentro da imagem, então o container não acessa o Hugging Face em produção. O script [`deploy/cloud-run.sh`](deploy/cloud-run.sh), rodado no Cloud Shell, faz tudo:
 
 1. ativa as APIs necessárias;
-2. guarda a chave do Groq no Secret Manager (você digita a chave; ela não aparece na tela);
-3. cria uma conta de serviço que só pode ler esse segredo;
-4. compila a imagem no Cloud Build e publica o serviço.
+2. guarda no Secret Manager a chave do Groq (você digita; não aparece na tela), a lista de e-mails com acesso e uma chave de sessão gerada na hora;
+3. cria uma conta de serviço que só pode ler esses segredos, e outra só para o build;
+4. compila a imagem no Cloud Build e publica o serviço. Com `GOOGLE_CLIENT_ID=... bash deploy/cloud-run.sh`, liga o login com Google.
 
 Configuração pensada para custo zero: escala até zero quando ninguém usa, no máximo 1 instância (teto de gasto mesmo sob abuso) e 20 perguntas por visitante a cada 10 minutos (para não esgotar a cota gratuita do Groq). O preço disso é a partida a frio: depois de um tempo parado, o primeiro acesso leva de 30 a 60 segundos.
 
@@ -149,3 +161,6 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [ ] Avaliação automática (recall da busca, acerto das datas, fidelidade)
 - [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
 - [x] Publicação no Google Cloud Run
+- [x] Capa com modo teste (agenda fictícia) e login com Google para a área privada
+- [ ] Agenda privada num banco (Neon), importação de `.ics` e cadastro de compromissos
+- [ ] Cadastro em linguagem natural ("marca dentista quinta às 15h"), sempre com confirmação

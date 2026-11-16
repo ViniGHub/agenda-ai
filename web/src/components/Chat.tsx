@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { SmoothInput } from '@/components/ui/skiper-ui/smooth-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/lib/utils'
+import { cn, STAMP_BUTTON } from '@/lib/utils'
 import type { Answer } from '../types'
 import { AnswerText } from './AnswerText'
 
@@ -15,28 +15,20 @@ export type ChatMessage =
 
 const MAX_CHARS = 300
 
-const IDEAS = [
-  'O que tenho amanhã?',
-  'Quando é o dentista?',
-  'Quantas aulas de inglês tenho esta semana?',
-  'O que preciso levar no veterinário?',
-  'O que ficou de ponto a melhorar no meu feedback?',
-  'Tenho algo com a padaria semana que vem?',
-  'Tenho show marcado?',
-]
-
 interface Props {
   messages: ChatMessage[]
   pending: boolean
   disabled: boolean
   selectedId: number | null
+  ideas: string[]
+  emptyNote?: ReactNode
   onSend: (question: string) => void
   onSelect: (messageId: number) => void
   onShowEvent: (eventId: number) => void
 }
 
 /** The left page of the notebook: questions in red handwriting, answers typed underneath. */
-export function Chat({ messages, pending, disabled, selectedId, onSend, onSelect, onShowEvent }: Props) {
+export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote, onSend, onSelect, onShowEvent }: Props) {
   const [draft, setDraft] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const reduceMotion = useReducedMotion()
@@ -64,9 +56,10 @@ export function Chat({ messages, pending, disabled, selectedId, onSend, onSelect
             <h2 className="font-heading text-[1.6rem] leading-[var(--line)] font-medium tracking-tight [font-variation-settings:'SOFT'_80]">
               O que você quer saber da agenda?
             </h2>
-            <p className="leading-[var(--line)] text-muted-foreground">Algumas ideias para começar:</p>
+            {emptyNote}
+            {ideas.length > 0 && <p className="leading-[var(--line)] text-muted-foreground">Algumas ideias para começar:</p>}
             <ul>
-              {IDEAS.map((idea) => (
+              {ideas.map((idea) => (
                 <li key={idea} className="leading-[var(--line)]">
                   <InkLink
                     disabled={pending || disabled}
@@ -188,7 +181,7 @@ export function Chat({ messages, pending, disabled, selectedId, onSend, onSelect
           type="submit"
           variant="ghost"
           disabled={!draft.trim() || pending || disabled}
-          className="stamp h-auto -rotate-2 px-3 py-1.5 text-[11px] text-primary transition-transform hover:rotate-0 hover:bg-primary hover:text-primary-foreground"
+          className={cn(STAMP_BUTTON, '-rotate-2 px-3 py-1.5 text-[11px]')}
         >
           Perguntar
         </Button>
