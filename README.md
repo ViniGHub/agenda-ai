@@ -2,6 +2,8 @@
 
 Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu.
 
+**Demonstração:** https://agenda-ia-924443163141.us-east1.run.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
+
 > Em construção. Pronto: indexação, busca híbrida, resposta com o LLM e interface web (React + FastAPI). Falta: avaliação automática.
 
 A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda completa" é o gabarito para conferir.
@@ -144,4 +146,4 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Resposta com citações validadas e "não encontrei" quando não houver base
 - [ ] Avaliação automática (recall da busca, acerto das datas, fidelidade)
 - [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
-- [ ] Publicação no Google Cloud Run
+- [x] Publicação no Google Cloud Run
