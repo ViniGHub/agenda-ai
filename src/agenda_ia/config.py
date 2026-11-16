@@ -13,3 +13,6 @@ TZ = ZoneInfo("America/Sao_Paulo")
 # E5 models expect the prefixes "query: " and "passage: ".
 EMBEDDING_MODEL = "intfloat/multilingual-e5-small"
 EMBEDDING_DIM = 384
+
+# Free tier on Groq. The key comes from the GROQ_API_KEY variable (or the .env file).
+LLM_MODEL = "openai/gpt-oss-120b"

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from . import store
+from .config import TZ
 from .embeddings import Embedder
 from .store import StoredEvent
 
@@ -65,12 +66,42 @@ def hybrid_search(
     start: datetime | None = None,
     end: datetime | None = None,
     k: int = 5,
-    candidates: int = 30,
+    candidates: int = 200,
+    collapse_series: bool = True,
+    now: datetime | None = None,
 ) -> list[Hit]:
+    """Top k events. With collapse_series, a recurring event counts once, shown at its next occurrence.
+
+    Candidates are generous because every occurrence of a recurring event has the same text:
+    a daily meeting alone could otherwise fill a small candidate list.
+    """
     start_ts = int(start.timestamp()) if start else None
     end_ts = int(end.timestamp()) if end else None
     by_meaning = store.vector_search(conn, embedder.query(question), candidates, start_ts, end_ts)
     by_word = store.keyword_search(conn, fts_query(question), candidates, start_ts, end_ts)
-    fused = reciprocal_rank_fusion({"significado": by_meaning, "palavra": by_word})[:k]
+    fused = reciprocal_rank_fusion({"significado": by_meaning, "palavra": by_word})
+
+    if not collapse_series:
+        fused = fused[:k]
+        events = store.get_events(conn, [item for item, _, _ in fused])
+        return [Hit(events[item], score, found_by) for item, score, found_by in fused if item in events]
+
     events = store.get_events(conn, [item for item, _, _ in fused])
-    return [Hit(events[item], score, found_by) for item, score, found_by in fused if item in events]
+    series: dict[str, list[tuple[int, float, tuple[str, ...]]]] = {}
+    for item, score, found_by in fused:  # fused is sorted, so each series keeps its best score first
+        series.setdefault(events[item].event.uid, []).append((item, score, found_by))
+
+    now = now or datetime.now(TZ)
+    hits = []
+    for members in list(series.values())[:k]:
+        sources = tuple(dict.fromkeys(name for _, _, found_by in members for name in found_by))
+        hits.append(Hit(_closest_occurrence([events[m[0]] for m in members], now), members[0][1], sources))
+    return hits
+
+
+def _closest_occurrence(occurrences: list[StoredEvent], now: datetime) -> StoredEvent:
+    """The next occurrence that has not ended; if all are past, the most recent one."""
+    upcoming = [o for o in occurrences if o.event.end > now]
+    if upcoming:
+        return min(upcoming, key=lambda o: o.event.start)
+    return max(occurrences, key=lambda o: o.event.start)

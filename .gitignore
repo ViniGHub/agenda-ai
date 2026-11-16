@@ -5,8 +5,10 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 
-# Segredos (a chave do Groq fica só no .env local)
+# Segredos (a chave do Groq fica só no .env local). Cobre também .env.txt, .env.local etc.
 .env
+.env.*
+!.env.example
 
 # Gerados: qualquer um recria rodando a indexação
 dados/

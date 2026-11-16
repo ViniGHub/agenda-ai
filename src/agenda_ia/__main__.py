@@ -3,6 +3,7 @@
     python -m agenda_ia listar [arquivo.ics] [--md exemplos/agenda_exemplo.md]
     python -m agenda_ia indexar [arquivo.ics]
     python -m agenda_ia buscar "quando é o dentista?" [--de 2026-11-16 --ate 2026-11-23]
+    python -m agenda_ia perguntar "o que tenho amanhã?" [--agora 2026-11-16T12:00] [-v]
 """
 
 from __future__ import annotations
@@ -44,6 +45,13 @@ def main(argv: list[str] | None = None) -> None:
     find.add_argument("--ate", type=date.fromisoformat, help="dia final, inclusive")
     find.add_argument("-k", type=int, default=5)
 
+    ask = sub.add_parser("perguntar", help="resposta completa: entende a pergunta, busca e responde com o LLM")
+    ask.add_argument("pergunta")
+    ask.add_argument("--db", default=str(DEFAULT_DB))
+    ask.add_argument("--agora", type=datetime.fromisoformat,
+                     help="finge que agora é este momento (ex.: 2026-11-16T12:00), útil com a agenda de exemplo")
+    ask.add_argument("-v", "--detalhes", action="store_true", help="mostra a consulta entendida, a estratégia e os tokens")
+
     args = parser.parse_args(argv)
 
     if args.comando == "listar":
@@ -71,6 +79,31 @@ def main(argv: list[str] | None = None) -> None:
         conn = store.connect(args.db)
         store.rebuild(conn, events, vectors, embedder.dim)
         print(f"{len(events)} compromissos indexados ({start:%d/%m/%Y} a {end:%d/%m/%Y}) em {args.db}")
+        return
+
+    if args.comando == "perguntar":
+        from .assistant import Assistant
+        from .llm import GroqModel, LLMError
+
+        try:
+            model = GroqModel()
+        except LLMError as error:
+            sys.exit(str(error))
+        now = args.agora.replace(tzinfo=TZ) if args.agora and args.agora.tzinfo is None else args.agora
+        result = Assistant(store.connect(args.db), E5Embedder(), model).ask(args.pergunta, now)
+        print(result.answer.text)
+        if result.answer.cited:
+            print("\nFontes:")
+            for stored in result.answer.cited:
+                print(f"  - {stored.event.title}: {format_when(stored.event)}")
+        if args.detalhes:
+            q = result.query
+            print(f"\n[consulta] tipo={q.tipo} de={q.de} ate={q.ate} busca={q.busca!r}"
+                  + (f" (reserva: {result.query_note})" if result.query_note else ""))
+            print(f"[busca] {result.strategy}: {len(result.retrieved)} compromissos recuperados")
+            if result.answer.note:
+                print(f"[guarda] {result.answer.note}")
+            print(f"[custo] {result.usage.total} tokens em {result.usage.calls} chamadas, {result.seconds:.1f} s")
         return
 
     conn = store.connect(args.db)

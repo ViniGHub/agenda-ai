@@ -47,3 +47,35 @@ class FakeEmbedder:
 @pytest.fixture
 def fake_embedder() -> FakeEmbedder:
     return FakeEmbedder()
+
+
+class FakeModel:
+    """Returns canned replies in order and records what it was sent. An Exception reply is raised."""
+
+    def __init__(self, *replies):
+        from agenda_ia.llm import Usage
+
+        self.replies = list(replies)
+        self.sent = []
+        self.usage = Usage()
+
+    def complete_json(self, system, user, max_tokens=1024):
+        self.sent.append((system, user))
+        self.usage.calls += 1
+        self.usage.prompt_tokens += 100
+        self.usage.completion_tokens += 10
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+@pytest.fixture
+def sample_db(sample_ics, fake_embedder):
+    from agenda_ia import store
+    from agenda_ia.calendar_loader import load_events
+
+    events = load_events(sample_ics, date(2026, 11, 1), date(2027, 2, 1))
+    conn = store.connect(":memory:")
+    store.rebuild(conn, events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)
+    return conn
