@@ -80,9 +80,29 @@ A agenda fictícia pode ser conferida em dois formatos: o arquivo bruto [`exempl
 
 Para usar a sua agenda: exporte o `.ics` do Google Agenda (Configurações → Importar e exportar) ou do Outlook, salve em `agenda_real/` (fora do git) e rode `python -m agenda_ia indexar agenda_real/arquivo.ics`.
 
-## Primeiros resultados (busca, sem LLM)
+## Primeiros resultados
 
-Oito perguntas sobre a agenda fictícia; em sete o compromisso certo veio em 1º lugar e em todas ele está no top 3. O erro é instrutivo: em "consulta odontológica", a palavra "consulta" puxou a "Consulta com a nutricionista" para o topo pela busca por palavra, e o "Dentista" ficou em 2º, achado só pelo significado. A avaliação automática da próxima fase vai medir isso em dezenas de perguntas.
+Rodada manual na agenda fictícia, fingindo que agora é segunda, 16/11/2026, ao meio-dia. A avaliação automática (próxima fase) vai medir isso em dezenas de perguntas.
+
+**Só a busca, sem LLM (8 perguntas):** em 7 o compromisso certo veio em 1º lugar e em todas ele estava no top 3. O erro foi instrutivo: em "consulta odontológica", a palavra "consulta" puxou a "Consulta com a nutricionista" para o topo pela busca por palavra, e o "Dentista" ficou em 2º, achado só pelo significado.
+
+**Com o LLM (10 perguntas):** as 10 respostas certas, com as fontes certas.
+
+| Pergunta | Entendida como | Resposta |
+|---|---|---|
+| o que tenho amanhã? | listar 17/11 | os 4 compromissos de terça, em ordem |
+| quando é minha consulta odontológica? | buscar "consulta odontológica" a partir de hoje | terça, 17/11, às 8h (Dentista) |
+| quantas aulas de inglês tenho esta semana? | contar "aula", 16/11 a 22/11 | 2 |
+| o que ficou de ponto a melhorar no meu feedback? | buscar | estimativas de prazo e pedir ajuda mais cedo |
+| tenho algo com a padaria semana que vem? | buscar "padaria", 23/11 a 29/11 | quinta, 26/11, às 14h |
+| tenho show do Coldplay marcado? | buscar | não encontrei isso na agenda |
+| como está meu fim de semana? | listar 21/11 a 22/11 | aniversário da mãe e veterinário |
+
+O caso da "consulta odontológica" mostra a divisão de trabalho: a busca só precisa trazer o certo entre os 5 primeiros, e o modelo escolhe.
+
+A rodada também pegou um defeito de texto: o modelo dizia "férias começam sábado, 19/12, às 0h". O prompt agora manda não dar horário para compromisso de dia inteiro.
+
+**Custo:** cerca de 2 mil tokens por pergunta (quase tudo entrada: o calendário de datas e os compromissos). Dentro do limite, a resposta sai em 1 a 2 segundos. Acima de umas 4 perguntas por minuto, o plano gratuito (8.000 tokens/minuto) devolve o erro 429, o cliente espera e tenta de novo, e a resposta passa a levar de 8 a 15 segundos.
 
 ## Roteiro
 

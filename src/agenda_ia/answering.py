@@ -46,7 +46,8 @@ Regras:
 - Se os compromissos não respondem à pergunta, diga que não encontrou isso na agenda, com "encontrou": false e "citacoes": [].
 - Pergunta sobre o futuro: ignore o que já passou. Sobre o passado: ignore o que ainda vai acontecer.
 - Seja direto: até 3 frases, ou uma lista curta com "- " quando houver vários compromissos.
-- Escreva datas assim: "terça, 17/11, às 8h". Não use markdown além da lista.
+- Escreva datas assim: "terça, 17/11, às 8h". Compromisso de dia inteiro não tem horário: diga só o dia ("sábado, 19/12").
+- Não use markdown além da lista.
 
 Responda só com JSON: {{"resposta": "...", "citacoes": [1, 2], "encontrou": true}}"""
 
