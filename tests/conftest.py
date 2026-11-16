@@ -1,4 +1,3 @@
-import importlib.util
 import re
 import zlib
 from datetime import date
@@ -11,17 +10,12 @@ ROOT = Path(__file__).resolve().parents[1]
 BASE = date(2026, 11, 16)  # a Monday; the sample agenda is built around this week
 
 
-def _load_generator():
-    spec = importlib.util.spec_from_file_location("gerar_agenda_exemplo", ROOT / "scripts" / "gerar_agenda_exemplo.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture
 def sample_ics(tmp_path: Path) -> Path:
+    from agenda_ia.sample import build
+
     path = tmp_path / "agenda.ics"
-    path.write_bytes(_load_generator().build(BASE).to_ical())
+    path.write_bytes(build(BASE).to_ical())
     return path
 
 
@@ -76,6 +70,6 @@ def sample_db(sample_ics, fake_embedder):
     from agenda_ia.calendar_loader import load_events
 
     events = load_events(sample_ics, date(2026, 11, 1), date(2027, 2, 1))
-    conn = store.connect(":memory:")
+    conn = store.connect(":memory:", check_same_thread=False)  # the API tests use it from a worker thread
     store.rebuild(conn, events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)
     return conn

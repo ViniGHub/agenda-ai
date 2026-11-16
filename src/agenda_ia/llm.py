@@ -36,6 +36,17 @@ class JSONModel(Protocol):
 
 
 @dataclass
+class UnavailableModel:
+    """Stand-in when there is no API key: every call fails, so the app degrades to search-only answers."""
+
+    reason: str = "LLM indisponível"
+    usage: Usage = field(default_factory=Usage)
+
+    def complete_json(self, system: str, user: str, max_tokens: int = 1024) -> dict:
+        raise LLMError(self.reason)
+
+
+@dataclass
 class GroqModel:
     model: str = field(default_factory=lambda: os.getenv("AGENDA_IA_MODELO", LLM_MODEL))
     usage: Usage = field(default_factory=Usage)

@@ -21,10 +21,11 @@ class StoredEvent:
     event: Event
 
 
-def connect(path: str | Path) -> sqlite3.Connection:
+def connect(path: str | Path, check_same_thread: bool = True) -> sqlite3.Connection:
+    """check_same_thread=False lets a web server's worker threads share it (callers must serialize writes)."""
     if str(path) != ":memory:":
         Path(path).parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)

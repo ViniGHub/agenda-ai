@@ -2,7 +2,9 @@
 
 Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu.
 
-> Em construção. Pronto: indexação, busca híbrida e resposta com o LLM. Falta: avaliação automática e interface web.
+> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM e interface web (React + FastAPI). Falta: avaliação automática.
+
+A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda completa" é o gabarito para conferir.
 
 ## Por que não é "só um RAG"
 
@@ -29,7 +31,12 @@ pergunta
        buscar                   → busca vetorial + BM25 no intervalo → RRF → top 5, recorrentes agrupados
        listar/contar com termos → busca híbrida ampla (top 20), sem agrupar, em ordem
   3. responder (LLM): só com os compromissos numerados, citando os números → validação em código
+
+web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
+     POST /api/perguntar · GET /api/agenda · GET /api/status
 ```
+
+O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`api.py`](src/agenda_ia/api.py) e os tipos espelhados em [`web/src/types.ts`](web/src/types.ts). Em produção, o FastAPI serve o React já compilado, então é uma origem só (sem CORS) e a chave do Groq nunca chega ao navegador.
 
 O LLM é o `openai/gpt-oss-120b` no plano gratuito do Groq (8.000 tokens por minuto). Cada pergunta faz duas chamadas e gasta uns 2 a 4 mil tokens.
 
@@ -73,8 +80,23 @@ python -m agenda_ia buscar "padaria" --de 2026-11-23 --ate 2026-11-29
 # --agora finge a data atual, para a agenda de exemplo (que é da semana de 16/11/2026)
 python -m agenda_ia perguntar "o que tenho amanhã?" --agora 2026-11-16T12:00 -v
 
-pytest                                          # 32 testes, sem rede: o LLM e os embeddings são simulados
+pytest                                          # 38 testes, sem rede: o LLM e os embeddings são simulados
 ```
+
+Interface web (requer Node 20 ou mais novo):
+
+```bash
+pip install -e ".[api]"
+cd web && npm install && npm run build && cd ..
+uvicorn agenda_ia.api:app --port 8000           # abre em http://localhost:8000
+
+# desenvolvimento do front, com recarga automática: deixe o uvicorn rodando e, em outro terminal,
+cd web && npm run dev                           # http://localhost:5173 (encaminha /api para a porta 8000)
+```
+
+Sem a variável `AGENDA_ICS`, a API gera a agenda fictícia em volta da semana atual. Com `AGENDA_ICS=agenda_real/minha.ics`, usa a sua (rode só localmente: a aba "Agenda completa" mostra tudo a quem acessar).
+
+Publicação: o [`Dockerfile`](Dockerfile) compila o React e roda a API num container só, no formato do Hugging Face Spaces (porta 7860, usuário 1000). A chave do Groq entra como segredo do Space. Cada visitante pode fazer 20 perguntas a cada 10 minutos, para não esgotar a cota gratuita.
 
 A agenda fictícia pode ser conferida em dois formatos: o arquivo bruto [`exemplos/agenda_exemplo.ics`](exemplos/agenda_exemplo.ics) e a versão legível [`exemplos/agenda_exemplo.md`](exemplos/agenda_exemplo.md), que é o gabarito para validar as respostas.
 
@@ -112,4 +134,5 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Entender a pergunta com o LLM (intervalo de datas e tipo de pergunta), com saída JSON validada
 - [x] Resposta com citações validadas e "não encontrei" quando não houver base
 - [ ] Avaliação automática (recall da busca, acerto das datas, fidelidade)
-- [ ] Interface de chat e publicação no Hugging Face Spaces
+- [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
+- [ ] Publicação no Hugging Face Spaces
