@@ -8,6 +8,7 @@ import { Label } from '@/components/ui/label'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
 import { addEvent, interpretSentence } from '../api'
 import type { AgendaEvent, Draft, Space } from '../types'
+import { DateField, TimeField } from './DateTimeFields'
 
 interface Props {
   open: boolean
@@ -111,12 +112,23 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
     }
   }
 
+  /** Shows the message and puts the cursor on the field (the browser's own messages would be in its language). */
+  function fail(message: string, field: string) {
+    setError(message)
+    document.getElementById(field)?.focus()
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault()
     setError(null)
-    if (!form.diaInteiro && form.fim && form.fim <= form.inicio) {
-      setError('O fim precisa ser depois do início.')
-      return
+    const typed = (id: string) => (document.getElementById(id) as HTMLInputElement | null)?.value.trim() ?? ''
+    if (!form.titulo.trim()) return fail('Escreva o que é o compromisso.', 'titulo')
+    if (!form.data) return fail(typed('data') ? 'Confira o dia: use dd/mm/aaaa.' : 'Informe o dia (dd/mm/aaaa).', 'data')
+    if (!form.diaInteiro) {
+      if (!form.inicio)
+        return fail(typed('inicio') ? 'Confira o início: use hh:mm, de 00:00 a 23:59.' : 'Informe o horário de início (hh:mm) ou marque "Dia inteiro".', 'inicio')
+      if (!form.fim && typed('fim')) return fail('Confira o fim: use hh:mm, de 00:00 a 23:59.', 'fim')
+      if (form.fim && form.fim <= form.inicio) return fail('O fim precisa ser depois do início.', 'fim')
     }
     setSaving(true)
     try {
@@ -219,15 +231,15 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
               </DialogDescription>
             </DialogHeader>
 
-            <form onSubmit={submit} className="grid gap-4">
+            <form onSubmit={submit} noValidate className="grid gap-4">
               <Field label="O quê" htmlFor="titulo" state={stateOf('titulo')}>
-                <Input id="titulo" required maxLength={120} autoFocus={!llm} value={form.titulo}
+                <Input id="titulo" aria-required maxLength={120} autoFocus={!llm} value={form.titulo}
                   onChange={(e) => set('titulo')(e.target.value)} placeholder="Dentista, reunião com a padaria…" />
               </Field>
 
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Dia" htmlFor="data" state={stateOf('data')}>
-                  <Input id="data" type="date" required value={form.data} onChange={(e) => set('data')(e.target.value)} />
+                  <DateField id="data" value={form.data} onChange={set('data')} />
                 </Field>
                 <div className="flex items-end gap-2 pb-2">
                   <Checkbox id="dia-inteiro" checked={form.diaInteiro} onCheckedChange={(v) => set('diaInteiro')(v === true)} />
@@ -240,10 +252,10 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
               {!form.diaInteiro && (
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Começa" htmlFor="inicio" state={stateOf('inicio')}>
-                    <Input id="inicio" type="time" required value={form.inicio} onChange={(e) => set('inicio')(e.target.value)} />
+                    <TimeField id="inicio" value={form.inicio} onChange={set('inicio')} />
                   </Field>
                   <Field label="Termina (opcional)" htmlFor="fim" state={stateOf('fim')}>
-                    <Input id="fim" type="time" value={form.fim} onChange={(e) => set('fim')(e.target.value)} />
+                    <TimeField id="fim" value={form.fim} onChange={set('fim')} />
                   </Field>
                 </div>
               )}
