@@ -8,6 +8,9 @@ Two workspaces share the same question pipeline:
   /api/minha/...  the signed-in person's own agenda (Google sign-in + allowlist, see auth.py).
                   Stored in Postgres when DATABASE_URL is set (Neon), otherwise in memory.
 
+Both have .../interpretar: one sentence in, the event form filled in out. It saves nothing; the
+person checks the form and sends it to .../compromissos like any other new event.
+
 Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into an in-memory private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
@@ -23,6 +26,7 @@ from collections import OrderedDict, defaultdict, deque
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from datetime import time as dt_time  # the module name "time" is taken by the clock below
 from pathlib import Path
 from typing import Callable
 
@@ -35,6 +39,7 @@ from .assistant import Assistant
 from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, SESSION_SECONDS, AuthError, AuthSettings, User
 from .calendar_loader import format_when, load_events
 from .config import ROOT, TZ
+from .drafting import NoEventError, draft_from_text
 from .editing import MAX_IMPORT_CHARS, EventDraft, ImportError_, import_events
 from .llm import LLMError, UnavailableModel
 from .store import CREATED, IMPORTED, SqliteEventStore, StoredEvent
@@ -113,6 +118,25 @@ class LoginIn(BaseModel):
     credential: str = Field(min_length=10, max_length=8192)
 
 
+class SentenceIn(BaseModel):
+    frase: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+
+
+class SuggestionOut(BaseModel):
+    """The form, filled in from one sentence. Nothing was saved: the person reviews it and sends the form."""
+
+    titulo: str
+    data: date | None
+    dia_inteiro: bool
+    inicio: str | None  # HH:MM
+    fim: str | None
+    local: str
+    participantes: list[str]
+    notas: str
+    faltando: list[str] = Field(description="campos que a frase não trouxe e o formulário exige: data, inicio")
+    tokens: int
+
+
 class ImportIn(BaseModel):
     conteudo: str = Field(min_length=1, max_length=MAX_IMPORT_CHARS)
 
@@ -120,6 +144,10 @@ class ImportIn(BaseModel):
 class ImportOut(BaseModel):
     encontrados: int  # occurrences in the agenda's window
     importados: int  # new ones (repeats of earlier imports are skipped)
+
+
+def _clock(value: dt_time | None) -> str | None:
+    return value.strftime("%H:%M") if value else None
 
 
 def event_out(stored: StoredEvent) -> EventOut:
@@ -272,7 +300,7 @@ def create_app(
         app.state.agenda = load()
         yield
 
-    app = FastAPI(title="agenda-ia", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="agenda-ia", version="0.4.0", lifespan=lifespan)
 
     def state(request: Request) -> AppState:
         return request.app.state.agenda
@@ -323,6 +351,28 @@ def create_app(
                 estrategia=r.strategy, recuperados=[event_out(e) for e in r.retrieved], guarda=r.answer.note,
                 tokens=r.usage.total, chamadas=r.usage.calls, segundos=round(r.seconds, 2),
             ),
+        )
+
+    def interpret_in(s: AppState, ws: Workspace, body: SentenceIn, request: Request) -> SuggestionOut:
+        if s.llm_model is None:
+            raise HTTPException(503, "O modelo de linguagem não está configurado: preencha o formulário à mão.")
+        if not limiter.allow(client_id(request)):  # same quota as questions: each sentence is one model call
+            raise HTTPException(429, "Limite de uso do modelo atingido. Tente de novo em alguns minutos.")
+        model = ws.assistant.model
+        with s.lock:
+            before = model.usage.total
+            try:
+                suggestion = draft_from_text(model, body.frase.strip(), datetime.now(TZ))
+            except NoEventError as error:
+                raise HTTPException(422, str(error))
+            except LLMError:
+                raise HTTPException(502, "Não consegui ler a frase agora. Preencha o formulário ou tente de novo.")
+            tokens = model.usage.total - before
+        return SuggestionOut(
+            titulo=suggestion.titulo, data=suggestion.data, dia_inteiro=suggestion.dia_inteiro,
+            inicio=_clock(suggestion.inicio), fim=_clock(suggestion.fim), local=suggestion.local,
+            participantes=suggestion.participantes, notas=suggestion.notas, faltando=suggestion.missing,
+            tokens=tokens,
         )
 
     def add_to(s: AppState, ws: Workspace, draft: EventDraft) -> EventOut:
@@ -395,6 +445,10 @@ def create_app(
     def demo_ask(body: QuestionIn, request: Request) -> AnswerOut:
         return answer_in(state(request), demo_workspace(request), body, request)
 
+    @app.post("/api/demo/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
+    def demo_interpret(body: SentenceIn, request: Request) -> SuggestionOut:
+        return interpret_in(state(request), demo_workspace(request), body, request)
+
     @app.post("/api/demo/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def demo_add(draft: EventDraft, request: Request, response: Response) -> EventOut:
@@ -422,6 +476,10 @@ def create_app(
     @app.post("/api/minha/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
     def own_ask(body: QuestionIn, request: Request, user: User = Depends(require_user)) -> AnswerOut:
         return answer_in(state(request), private_workspace(request, user), body, request)
+
+    @app.post("/api/minha/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
+    def own_interpret(body: SentenceIn, request: Request, user: User = Depends(require_user)) -> SuggestionOut:
+        return interpret_in(state(request), private_workspace(request, user), body, request)
 
     @app.post("/api/minha/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])

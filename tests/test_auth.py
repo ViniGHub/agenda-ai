@@ -80,6 +80,7 @@ def test_private_routes_need_a_session(client):
     assert client.get("/api/minha/status").status_code == 401
     assert client.get("/api/minha/agenda").status_code == 401
     assert client.post("/api/minha/perguntar", json={"pergunta": "amanhã?"}, headers=HEADERS).status_code == 401
+    assert client.post("/api/minha/interpretar", json={"frase": "dentista amanhã"}, headers=HEADERS).status_code == 401
     assert client.created == []
 
 

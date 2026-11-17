@@ -1,5 +1,5 @@
 // The only file that talks to the back-end.
-import type { AgendaEvent, Answer, Config, EventDraft, ImportResult, Me, Space, Status } from './types'
+import type { AgendaEvent, Answer, Config, EventDraft, ImportResult, Me, Space, Status, Suggestion } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -50,6 +50,7 @@ export const getStatus = (space: Space) => request<Status>(`/api/${space}/status
 export const getAgenda = (space: Space) => request<AgendaEvent[]>(`/api/${space}/agenda`)
 export const askQuestion = (space: Space, pergunta: string) => post<Answer>(`/api/${space}/perguntar`, { pergunta })
 
+export const interpretSentence = (space: Space, frase: string) => post<Suggestion>(`/api/${space}/interpretar`, { frase })
 export const addEvent = (space: Space, draft: EventDraft) => post<AgendaEvent>(`/api/${space}/compromissos`, draft)
 export const deleteEvent = (space: Space, id: number) =>
   request<{ apagado: number }>(`/api/${space}/compromissos/${id}`, { method: 'DELETE' })

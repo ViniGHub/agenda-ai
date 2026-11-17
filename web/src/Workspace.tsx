@@ -274,7 +274,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       </main>
 
       <Footer />
-      <EventForm open={formOpen} space={space} onOpenChange={setFormOpen} onSaved={onSaved} />
+      <EventForm open={formOpen} space={space} llm={status?.llm ?? false} onOpenChange={setFormOpen} onSaved={onSaved} />
     </div>
   )
 }

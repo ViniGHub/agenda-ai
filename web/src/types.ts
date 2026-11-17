@@ -77,3 +77,17 @@ export interface Me {
   nome: string | null
   email: string | null
 }
+
+/** The form filled in from one sentence ("dentista quinta às 15h"). Nothing is saved until the form is sent. */
+export interface Suggestion {
+  titulo: string
+  data: string | null // YYYY-MM-DD
+  dia_inteiro: boolean
+  inicio: string | null // HH:MM
+  fim: string | null
+  local: string
+  participantes: string[]
+  notas: string
+  faltando: Array<'data' | 'inicio'> // required fields the sentence did not give
+  tokens: number
+}

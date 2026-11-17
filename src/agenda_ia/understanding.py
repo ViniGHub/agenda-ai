@@ -46,7 +46,8 @@ class Query(BaseModel):
         return start, end
 
 
-def build_system_prompt(now: datetime) -> str:
+def date_reference(now: datetime) -> str:
+    """Today and the exact dates around it, computed here. Shared by every prompt that reads dates."""
     today = now.date()
     monday = today - timedelta(days=today.weekday())
     first_of_month = today.replace(day=1)
@@ -62,8 +63,7 @@ def build_system_prompt(now: datetime) -> str:
     def span(a: date, b: date) -> str:
         return f"{a.isoformat()} a {b.isoformat()}"
 
-    return f"""Você converte perguntas sobre uma agenda pessoal numa consulta estruturada.
-Hoje é {WEEKDAYS[today.weekday()]}, {today:%d/%m/%Y}, {now:%H:%M} (horário de São Paulo).
+    return f"""Hoje é {WEEKDAYS[today.weekday()]}, {today:%d/%m/%Y}, {now:%H:%M} (horário de São Paulo).
 
 Datas exatas (use estas, não calcule de cabeça):
 {chr(10).join(days)}
@@ -72,7 +72,12 @@ Esta semana: {span(monday, monday + timedelta(days=6))}
 Semana que vem: {span(monday + timedelta(days=7), monday + timedelta(days=13))}
 Este fim de semana: {span(monday + timedelta(days=5), monday + timedelta(days=6))}
 Este mês: {span(first_of_month, next_month - timedelta(days=1))}
-Mês que vem: {span(next_month, month_after - timedelta(days=1))}
+Mês que vem: {span(next_month, month_after - timedelta(days=1))}"""
+
+
+def build_system_prompt(now: datetime) -> str:
+    return f"""Você converte perguntas sobre uma agenda pessoal numa consulta estruturada.
+{date_reference(now)}
 
 Responda só com JSON neste formato:
 {{"tipo": "listar" | "buscar" | "contar", "de": "AAAA-MM-DD" ou null, "ate": "AAAA-MM-DD" ou null, "busca": "termos" ou null}}
