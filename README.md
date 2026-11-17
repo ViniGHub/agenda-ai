@@ -177,5 +177,5 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Publicação no Google Cloud Run
 - [x] Capa com modo teste (agenda fictícia) e login com Google para a área privada
 - [x] Cadastro e exclusão de compromissos, importação de `.ics`, Postgres com pgvector para a agenda privada
-- [ ] Ligar o Neon em produção (falta criar a conta e o segredo `agenda-ia-banco`)
+- [x] Neon ligado em produção: a agenda privada fica guardada no Postgres
 - [ ] Cadastro em linguagem natural ("marca dentista quinta às 15h"), sempre com confirmação
