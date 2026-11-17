@@ -2,7 +2,7 @@
 
 Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu. Ou peça para anotar, na mesma conversa, escrevendo ou falando: "marca dentista quinta às 15h".
 
-**Demonstração:** https://agenda-ia-924443163141.us-east1.run.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
+**Demonstração:** https://agenda-ia.web.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
 
 > Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa, também por voz) e importação de `.ics`. Falta: avaliação automática.
 
@@ -59,7 +59,7 @@ web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (
 
 A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/agenda_ia/store.py)), que tem duas implementações:
 
-- **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa a um cookie anônimo e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
+- **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa ao cookie de sessão (anônimo, sem login) e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
 - **Postgres com pgvector** ([`pgstore.py`](src/agenda_ia/pgstore.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
 
 Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser apagada), `cadastro` (anotado no formulário) ou `importado` (veio do `.ics`). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
@@ -71,7 +71,7 @@ Os mesmos testes de contrato rodam nas duas implementações ([`tests/test_store
 A capa do site tem dois caminhos: **"Testar com a agenda fictícia"**, sem conta, e **"Entrar com Google"**, para a agenda privada, que só abre para os e-mails autorizados.
 
 - O botão oficial do Google devolve um ID token (JWT assinado pelo Google). A API confere a assinatura, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`auth.py`](src/agenda_ia/auth.py)).
-- Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 8 horas. O token do Google não é guardado.
+- Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 8 horas. O token do Google não é guardado. O cookie se chama `__session` porque é o único nome que o Firebase Hosting repassa ao servidor; ele também guarda a cópia da demo, e o login tem relógio próprio dentro dele.
 - Toda requisição `POST` precisa do cabeçalho `X-Requested-With: agenda-ia`. Um site de terceiros não consegue enviá-lo sem uma liberação de CORS que esta API nunca dá, o que barra ataques de CSRF.
 - A lista de permitidos e a chave que assina os cookies ficam no Secret Manager, nunca no repositório. Quem sai da lista perde o acesso mesmo com um cookie ainda válido.
 - A agenda privada começa vazia: dá para importar o `.ics` exportado do Google Agenda ou anotar compromissos no formulário. Com o segredo do banco configurado, ela fica no Neon; sem ele, fica em memória e a tela avisa que é temporária.
@@ -198,6 +198,8 @@ O [`Dockerfile`](Dockerfile) compila o React e roda a API num container só; o m
 2. guarda no Secret Manager a chave do Groq (você digita; não aparece na tela), a lista de e-mails com acesso e uma chave de sessão gerada na hora;
 3. cria uma conta de serviço que só pode ler esses segredos, e outra só para o build;
 4. compila a imagem no Cloud Build e publica o serviço. Com `GOOGLE_CLIENT_ID=... bash deploy/cloud-run.sh`, liga o login com Google.
+
+**Endereço limpo:** o Cloud Run sempre dá um endereço com o número do projeto e a região. Na frente dele fica o Firebase Hosting, com `https://agenda-ia.web.app`. A versão publicada no Hosting não tem arquivos, só a regra "todo pedido vai para o Cloud Run", e o script [`deploy/firebase-hosting.sh`](deploy/firebase-hosting.sh) a publica pela API REST do Hosting, sem o Firebase CLI. A API diz ao CDN o que pode guardar: respostas da API nunca, arquivos de `/assets` (com hash no nome) por um ano, e o `index.html` é sempre revalidado. O endereço do Cloud Run continua funcionando.
 
 Configuração pensada para custo zero: escala até zero quando ninguém usa, no máximo 1 instância (teto de gasto mesmo sob abuso) e 20 perguntas por visitante a cada 10 minutos (para não esgotar a cota gratuita do Groq). O preço disso é a partida a frio: depois de um tempo parado, o primeiro acesso leva de 30 a 60 segundos.
 

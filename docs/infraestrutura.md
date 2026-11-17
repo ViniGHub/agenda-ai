@@ -20,7 +20,8 @@ REGIAO=us-east1
    (deploy/cloud-run.sh) │    (código enviado)  (roda o         (guarda a imagem)                     │
                          │                       Dockerfile)          │                               │
                          │                                            ▼                               │
- Navegador ──HTTPS───────┼──────────────────────────────────► Cloud Run: serviço agenda-ia           │
+ Navegador ──HTTPS───────┼──► Firebase Hosting ──────────────► Cloud Run: serviço agenda-ia           │
+  (agenda-ia.web.app)    │    (CDN, repassa tudo)                                                     │
                          │                                     └─ revisão ─► instância (container)   │
                          │                                          │   ▲                             │
                          │                         Secret Manager ──┘   │  Cloud Logging (logs)       │
@@ -164,11 +165,24 @@ Duas peças, em APIs e serviços / Google Auth Platform:
   - Se o app estiver em modo **Teste**, só os "usuários de teste" listados ali conseguem passar pela janela do Google.
   - Em **Produção**, qualquer conta Google passa pela janela, e quem decide o acesso é a lista do segredo `agenda-ia-permitidos`.
 - **ID do cliente OAuth** do tipo *Aplicativo da Web*:
-  - **Origens JavaScript autorizadas:** os endereços de onde o botão pode ser usado: os dois endereços do serviço no Cloud Run, `http://localhost:8000` e `http://localhost`.
+  - **Origens JavaScript autorizadas:** os endereços de onde o botão pode ser usado: `https://agenda-ia.web.app`, os dois endereços do serviço no Cloud Run, `http://localhost:8000` e `http://localhost`.
   - **URIs de redirecionamento:** vazio (o login é por janela, não por redirecionamento).
   - O **ID** é público (vai para o navegador). A **chave secreta do cliente** não é usada por este app.
 
 A verificação do login acontece no servidor ([`auth.py`](../src/agenda_ia/auth.py)): assinatura do token com as chaves públicas do Google, público igual ao ID do cliente, emissor, validade, e-mail verificado e presença na lista.
+
+### Firebase Hosting (endereço limpo)
+
+O endereço do Cloud Run (`agenda-ia-NUMERO.us-east1.run.app`) sempre leva o número do projeto e a região. O Firebase Hosting fica na frente e dá `https://agenda-ia.web.app`, com certificado e CDN, sem custo dentro da cota.
+
+- **O que está publicado nele:** nada além de uma regra, `{"glob": "**", "run": {"serviceId": "agenda-ia", "region": "us-east1"}}`. Todo pedido segue para o Cloud Run, inclusive os arquivos do React.
+- **Como publicar:** [`deploy/firebase-hosting.sh`](../deploy/firebase-hosting.sh), no Cloud Shell. Ele usa a API REST do Hosting com o acesso do `gcloud` (cria o site, cria uma versão com a regra, finaliza e publica), então não precisa instalar nem logar no Firebase CLI. Antes da primeira vez, o Firebase precisa ser adicionado ao projeto no console, onde se aceitam os termos.
+- **Plano:** como o projeto tem faturamento (exigência do Cloud Run), o Firebase fica no plano Blaze, que mantém a cota gratuita do Hosting.
+- **Duas regras do Hosting que mudaram o código:**
+  - **Cookies:** ele remove todos os cookies dos pedidos, menos um chamado `__session`. Por isso o login e a cópia da demo ficam num cookie só, com esse nome ([`auth.py`](../src/agenda_ia/auth.py)).
+  - **Tempo:** pedidos que passam de 60 segundos recebem erro 504, mesmo que o Cloud Run aceite 120. As respostas mais lentas daqui levam uns 20 segundos, quando a cota do Groq está apertada.
+- **Cache:** a API manda `Cache-Control: no-store` nas rotas `/api` (respostas pessoais nunca ficam no CDN), `public, max-age=31536000, immutable` em `/assets` (os nomes têm hash) e `no-cache` no resto.
+- O endereço do Cloud Run continua no ar; o Hosting é só mais uma porta.
 
 ### Cloud Logging
 
@@ -246,6 +260,13 @@ Ou pelo console: Cloud Run → agenda-ia → Registros.
    ```
 
 7. **Depois do deploy, o Cloud Run mostra também um segundo endereço** (formato `https://agenda-ia-xxxxxxxx-ue.a.run.app`). Se for usá-lo, adicione-o também às origens autorizadas do ID do cliente.
+8. **Endereço limpo (opcional).** No console do Firebase, adicione o Firebase ao projeto (é onde se aceitam os termos). Depois, no Cloud Shell:
+
+   ```bash
+   SITE=nome-do-site bash deploy/firebase-hosting.sh   # https://nome-do-site.web.app
+   ```
+
+   O nome precisa estar livre no Firebase inteiro. Inclua `https://nome-do-site.web.app` nas origens autorizadas do ID do cliente.
 
 ---
 
@@ -303,6 +324,7 @@ E apague o ID do cliente OAuth em Credenciais, o segredo `agenda-ia-banco` (se e
 | Cloud Logging | 50 GiB de logs | muito abaixo |
 | Groq | plano gratuito (8.000 tokens/minuto) | ~2 mil tokens por pergunta |
 | Neon | 1 GB e 100 horas de processamento por projeto; passando do limite, bloqueia gravações em vez de cobrar | alguns MB por agenda |
+| Firebase Hosting | 10 GB de armazenamento e 360 MB/dia de transferência | só a regra publicada; ~1 MB por primeira visita (o React e as fontes) |
 
 As cotas mudam com o tempo; confira a página de preços de cada serviço antes de replicar.
 
@@ -313,5 +335,6 @@ As cotas mudam com o tempo; confira a página de preços de cada serviço antes 
 - Nenhuma chave no código nem no Git: tudo no Secret Manager (produção) ou no `.env` ignorado pelo Git (local).
 - Contas de serviço próprias, cada uma só com o que precisa.
 - Teto de 1 instância e limite de perguntas por visitante contra abuso da cota gratuita do Groq.
-- Login conferido no servidor, cookie `HttpOnly` + `Secure` + `SameSite=Lax`, cabeçalho próprio contra CSRF, lista de permitidos fora do repositório.
+- Login conferido no servidor, cookie `__session` assinado, `HttpOnly` + `Secure` + `SameSite=Lax`, cabeçalho próprio contra CSRF, lista de permitidos fora do repositório.
+- Respostas da API marcadas `no-store`: o CDN do Firebase nunca guarda a agenda de ninguém.
 - O modelo de embeddings vai dentro da imagem: em produção, o container não depende de baixar nada.
