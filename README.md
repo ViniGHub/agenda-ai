@@ -1,10 +1,10 @@
 # agenda-ia
 
-Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu. Ou peça para anotar, na mesma conversa: "marca dentista quinta às 15h".
+Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu. Ou peça para anotar, na mesma conversa, escrevendo ou falando: "marca dentista quinta às 15h".
 
 **Demonstração:** https://agenda-ia-924443163141.us-east1.run.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
 
-> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa) e importação de `.ics`. Falta: avaliação automática.
+> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa, também por voz) e importação de `.ics`. Falta: avaliação automática.
 
 A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
 
@@ -45,8 +45,12 @@ mensagem que pede para anotar ("marca dentista quinta às 15h"), na própria con
 
 frase no bilhete do "Novo compromisso" → o passo 2 acima → o formulário abre preenchido, nada é salvo
 
+mensagem de voz → gravada no navegador (com medidor de nível; silêncio nem é enviado)
+  → transcrever (Whisper no Groq, sem guardar o áudio) → filtro de legendas inventadas
+  → o texto entra na conversa como se tivesse sido digitado, com a marca "por áudio"
+
 web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
-     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, compromissos (criar/apagar)
+     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, transcrever, compromissos
      /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
      /api/login · /api/logout · /api/me · /api/config
 ```
@@ -93,6 +97,28 @@ Quem decide se a mensagem é pergunta ou pedido é o modelo, na mesma chamada qu
 
 Um pedido de anotar custa duas chamadas ao modelo (entender e ler o compromisso), cerca de 3 mil tokens, o mesmo que uma pergunta.
 
+## Mensagens de voz
+
+O botão de microfone ao lado do "Enviar" grava uma mensagem de até um minuto. Ao enviar, o áudio vira texto e segue exatamente o caminho de uma mensagem digitada, então "marca dentista quinta às 15h" falado anota do mesmo jeito, com as mesmas guardas e o mesmo desfazer. A linha da conversa mostra o que foi entendido, com a marca "por áudio", para conferir na hora.
+
+**Por que um modelo:** transformar fala em texto exige um modelo de reconhecimento de fala. Bibliotecas de áudio (pydub, librosa) só leem, cortam e convertem arquivos. As opções avaliadas:
+
+| Opção | Por que sim | Por que não |
+|---|---|---|
+| **Whisper no Groq** (`whisper-large-v3-turbo`), a escolhida | melhor qualidade em português, plano gratuito, mesmo provedor e chave do modelo de linguagem, igual em todo navegador | o áudio sai para o Groq (não é guardado aqui) |
+| Web Speech API do navegador | zero custo, nada no servidor | no Chrome o áudio vai para o Google; Firefox não tem, Safari só em parte |
+| Whisper local (faster-whisper) no contêiner | o áudio não sai do servidor | só CPU: mais segundos por áudio, imagem e memória bem maiores, modelos menores erram mais em português |
+| Vosk | leve, offline | qualidade bem abaixo do Whisper |
+
+**Guardas:** o Whisper é conhecido por "ouvir" frases no silêncio, aprendidas de vídeos legendados. No teste com 3 segundos de ruído, ele devolveu "Obrigado." e marcou o trecho como fala com certeza (`no_speech_prob` = 0). Como uma mensagem de voz pode anotar na agenda:
+
+- **Silêncio nem sai do navegador:** um medidor acompanha o volume enquanto grava. Se nada passou do nível de uma voz perto do microfone, a página avisa "Não ouvi nada" e não envia.
+- **Legendas inventadas viram nada:** trechos marcados como não fala e frases de legenda conhecidas ("Obrigado.", "Legendas pela comunidade Amara.org", "Obrigado por assistir") são descartados, e a página pede para falar de novo ([`speech.py`](src/agenda_ia/speech.py)).
+- **Sem prompt de transcrição:** no silêncio, o Whisper pode repetir o próprio prompt, o que viraria um compromisso que ninguém pediu.
+- **Limites:** até um minuto e 2 MB por áudio, 15 áudios a cada 10 minutos por visitante. Aceita os formatos que os navegadores gravam (WebM/Opus no Chrome, Firefox e Android, MP4/AAC no Safari e iPhone).
+
+O áudio vai direto da memória do servidor para o Groq e é descartado: nunca é gravado em disco nem em log. A rota é `POST /api/{demo|minha}/transcrever`, com o áudio no corpo da requisição.
+
 ## Cadastro por frase
 
 No "Novo compromisso", um bilhete ao lado do formulário recebe a frase, por exemplo "almoço com a Ana amanhã meio-dia no Outback". **Preencher** devolve os campos do formulário; os que vieram da frase ficam em marca-texto e os que faltam ("reunião com a padaria semana que vem" não diz o dia nem a hora) ficam marcados com "falta". **Nada é salvo** até a pessoa apertar "Anotar na agenda", que usa a mesma rota e a mesma validação do formulário.
@@ -124,6 +150,7 @@ O que o prompt pede, o código confere:
 | Reconstrução completa do índice | Uma agenda tem centenas de eventos: reconstruir leva segundos e evita bugs de sincronização. |
 | Só o nome dos participantes | Minimização de dados: o modelo precisa saber *quem*, não o e-mail. |
 | Agenda fictícia na demonstração | A agenda real de uma pessoa não vai para um site público. |
+| Campos de dia e horário próprios | Os campos de data e hora do navegador seguem o idioma do navegador (mm/dd/yyyy e 09:00 AM num Chrome em inglês). Os da página são sempre dd/mm/aaaa, com calendário em português, e hh:mm em 24 horas. |
 
 ## Como rodar
 
@@ -217,4 +244,4 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Neon ligado em produção: a agenda privada fica guardada no Postgres
 - [x] Cadastro por frase ("dentista quinta às 15h na clínica Sorriso"): o formulário abre preenchido e nada é salvo sem confirmação
 - [x] Anotar pela conversa: pedido explícito anota com desfazer; o que não estiver claro pergunta antes
-- [ ] Anotar por áudio: gravar no celular, transcrever (Whisper no Groq) e seguir o mesmo caminho da conversa
+- [x] Mensagens de voz: gravar no celular, transcrever (Whisper no Groq) e seguir o mesmo caminho da conversa

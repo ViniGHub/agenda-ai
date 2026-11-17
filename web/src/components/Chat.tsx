@@ -1,16 +1,18 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
+import { MicIcon } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { SmoothInput } from '@/components/ui/skiper-ui/smooth-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { clock, MAX_SECONDS, useRecorder, type Recording } from '@/lib/recorder'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
 import type { AgendaEvent, Answer, AskMode } from '../types'
 import { AnswerText } from './AnswerText'
 import { NoteCard, type NoteState } from './NoteCard'
 
 export type ChatMessage =
-  | { id: number; role: 'user'; text: string }
+  | { id: number; role: 'user'; text: string; via?: 'audio' }
   // note/saved: where a "marca dentista quinta às 15h" reply stands after the person acted on it
   // mode: how the message was sent; offerUsed: the "write it down" link under a "not found" reply was clicked
   | { id: number; role: 'assistant'; answer: Answer; mode: AskMode; note?: NoteState; saved?: AgendaEvent | null; offerUsed?: boolean }
@@ -35,6 +37,9 @@ interface Props {
   selectedId: number | null
   ideas: string[]
   canNote: boolean // a language model is configured, so messages can be read as appointments
+  canRecord: boolean // voice messages: the server transcribes and this browser can record
+  pendingText: string
+  onAudio: (recording: Recording) => void
   emptyNote?: ReactNode
   onSend: (question: string) => void
   onSelect: (messageId: number) => void
@@ -43,8 +48,12 @@ interface Props {
 }
 
 /** The left page of the notebook: questions in red handwriting, answers typed underneath. */
-export function Chat({ messages, pending, disabled, selectedId, ideas, canNote, emptyNote, onSend, onSelect, onShowEvent, notes }: Props) {
+export function Chat({
+  messages, pending, disabled, selectedId, ideas, canNote, canRecord, pendingText, emptyNote,
+  onSend, onSelect, onShowEvent, notes, onAudio,
+}: Props) {
   const [draft, setDraft] = useState('')
+  const voice = useRecorder(onAudio)
   const listRef = useRef<HTMLDivElement>(null)
   const reduceMotion = useReducedMotion()
 
@@ -102,7 +111,14 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, canNote, 
               return (
                 <motion.div key={message.id} {...enter}>
                   <Line margin={<span className="font-mono text-[11px] text-pencil">P.{String(questionNumber).padStart(2, '0')}</span>}>
-                    <p className="font-hand text-[1.65rem] leading-[var(--line)] text-primary">{message.text}</p>
+                    <p className="font-hand text-[1.65rem] leading-[var(--line)] text-primary">
+                      {message.text}
+                      {message.via === 'audio' && (
+                        <span className="ml-2 inline-flex items-center gap-1 align-middle font-mono text-[10px] tracking-wide text-pencil uppercase">
+                          <MicIcon className="size-3" aria-hidden /> por áudio
+                        </span>
+                      )}
+                    </p>
                   </Line>
                 </motion.div>
               )
@@ -195,7 +211,7 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, canNote, 
         {pending && (
           <Line>
             <p className="font-hand text-[1.4rem] leading-[var(--line)] text-pencil">
-              consultando a agenda<span className="inline-block animate-pulse">…</span>
+              {pendingText}<span className="inline-block animate-pulse">…</span>
             </p>
           </Line>
         )}
@@ -205,28 +221,61 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, canNote, 
         <label htmlFor="pergunta" className="w-[var(--margin)] shrink-0 text-center font-mono text-[11px] text-pencil">
           P.
         </label>
-        <SmoothInput
-          id="pergunta"
-          value={draft}
-          maxLength={MAX_CHARS}
-          disabled={disabled}
-          autoComplete="off"
-          placeholder={disabled ? 'abrindo a agenda…' : 'pergunte, ou peça para anotar…'}
-          onChange={(event) => setDraft(event.target.value)}
-          wrapperClassName="flex-1 min-w-0"
-          className="font-hand text-[1.6rem] text-primary placeholder:text-pencil/70"
-        />
-        <span className="hidden font-mono text-[11px] text-pencil tabular-nums sm:inline">
-          {draft.length}/{MAX_CHARS}
-        </span>
-        <Button
-          type="submit"
-          variant="ghost"
-          disabled={!draft.trim() || pending || disabled}
-          className={cn(STAMP_BUTTON, '-rotate-2 px-3 py-1.5 text-[11px]')}
-        >
-          Enviar
-        </Button>
+        {voice.recording ? (
+          <>
+            <div className="flex min-w-0 flex-1 items-center gap-3" role="status" aria-live="polite">
+              <span className="size-2.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
+              <span className="hidden font-hand text-[1.5rem] leading-none text-primary min-[400px]:inline">gravando</span>
+              <span className="font-mono text-[12px] whitespace-nowrap text-pencil tabular-nums">
+                {clock(voice.seconds)}
+                <span className="hidden sm:inline"> / {clock(MAX_SECONDS)}</span>
+              </span>
+              {/* how loud the microphone hears you: if it stays flat, you are not being heard */}
+              <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-border sm:block" aria-hidden>
+                <span className="block h-full rounded-full bg-primary transition-[width] duration-100"
+                  style={{ width: `${Math.min(1, voice.level * 10) * 100}%` }} />
+              </span>
+              <InkLink onClick={voice.cancel} className="font-mono text-[11px] tracking-wide text-pencil uppercase">
+                cancelar
+              </InkLink>
+            </div>
+            <Button type="button" variant="ghost" onClick={voice.stop} className={cn(STAMP_BUTTON, '-rotate-2 px-3 py-1.5 text-[11px]')}>
+              Enviar áudio
+            </Button>
+          </>
+        ) : (
+          <>
+            <SmoothInput
+              id="pergunta"
+              value={draft}
+              maxLength={MAX_CHARS}
+              disabled={disabled}
+              autoComplete="off"
+              placeholder={disabled ? 'abrindo a agenda…' : 'pergunte, ou peça para anotar…'}
+              onChange={(event) => setDraft(event.target.value)}
+              wrapperClassName="flex-1 min-w-0"
+              className="font-hand text-[1.6rem] text-primary placeholder:text-pencil/70"
+            />
+            <span className="hidden font-mono text-[11px] text-pencil tabular-nums sm:inline">
+              {draft.length}/{MAX_CHARS}
+            </span>
+            {canRecord && (
+              <Button type="button" variant="ghost" size="icon" aria-label="Gravar uma mensagem de voz"
+                title="Gravar uma mensagem de voz" disabled={pending || disabled} onClick={() => void voice.start()}
+                className="shrink-0 rounded-full text-primary hover:bg-primary/10">
+                <MicIcon />
+              </Button>
+            )}
+            <Button
+              type="submit"
+              variant="ghost"
+              disabled={!draft.trim() || pending || disabled}
+              className={cn(STAMP_BUTTON, '-rotate-2 px-3 py-1.5 text-[11px]')}
+            >
+              Enviar
+            </Button>
+          </>
+        )}
       </form>
     </section>
   )

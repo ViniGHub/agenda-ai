@@ -16,3 +16,6 @@ EMBEDDING_DIM = 384
 
 # Free tier on Groq. The key comes from the GROQ_API_KEY variable (or the .env file).
 LLM_MODEL = "openai/gpt-oss-120b"
+
+# Speech to text for voice messages, also on Groq's free tier (same key).
+AUDIO_MODEL = "whisper-large-v3-turbo"

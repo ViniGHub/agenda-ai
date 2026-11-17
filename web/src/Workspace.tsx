@@ -3,11 +3,12 @@ import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
-import { addDraft, ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs } from './api'
+import { addDraft, ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs, transcribeAudio } from './api'
 import { AgendaPanel } from './components/AgendaPanel'
 import { Chat, type ChatMessage, type NoteHandlers } from './components/Chat'
 import { DetailsPanel } from './components/DetailsPanel'
 import { EventForm } from './components/EventForm'
+import { canRecord, type Recording } from '@/lib/recorder'
 import type { AgendaEvent, AskMode, Draft, Me, Space, Status } from './types'
 
 type Tab = 'detalhes' | 'agenda'
@@ -39,6 +40,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pending, setPending] = useState(false)
+  const [pendingText, setPendingText] = useState('consultando a agenda')
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [tab, setTab] = useState<Tab>('detalhes')
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
@@ -69,8 +71,36 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   async function send(question: string, mode: AskMode = 'auto', echo = true) {
     const text = question.trim()
     if (!text || pending) return
-    if (echo) setMessages((m) => [...m, { id: nextId.current++, role: 'user', text }])
     setPending(true)
+    try {
+      await ask(text, mode, echo)
+    } finally {
+      setPending(false)
+    }
+  }
+
+  /** A voice message: transcribed on the server, then asked like a typed one. */
+  async function sendAudio(recording: Recording) {
+    if ('error' in recording) {
+      setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: recording.error }])
+      return
+    }
+    if (pending) return
+    setPending(true)
+    setPendingText('ouvindo o áudio')
+    try {
+      const { texto } = await transcribeAudio(space, recording.blob)
+      await ask(texto, 'auto', true, 'audio')
+    } catch (error) {
+      setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: handleError(error) }])
+    } finally {
+      setPending(false)
+    }
+  }
+
+  async function ask(text: string, mode: AskMode, echo: boolean, via?: 'audio') {
+    if (echo) setMessages((m) => [...m, { id: nextId.current++, role: 'user', text, via }])
+    setPendingText('consultando a agenda')
     try {
       const answer = await askQuestion(space, text, mode)
       const id = nextId.current++
@@ -80,8 +110,6 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       if (answer.acao?.tipo === 'anotado') load() // already in the agenda: refresh the count and the list
     } catch (error) {
       setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: handleError(error) }])
-    } finally {
-      setPending(false)
     }
   }
 
@@ -227,8 +255,8 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
           </div>
           {isDemo ? (
             <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-primary sm:-rotate-1 sm:text-right">
-              modo demonstração: agenda fictícia, refeita em volta desta semana. não escreva dados pessoais: a pergunta vai
-              para um modelo de linguagem.
+              modo demonstração: agenda fictícia, refeita em volta desta semana. não escreva nem fale dados pessoais: a
+              mensagem vai para um modelo de linguagem.
             </p>
           ) : (
             <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-pencil sm:-rotate-1 sm:text-right">
@@ -318,6 +346,9 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             onShowEvent={showEvent}
             notes={notes}
             canNote={status?.llm ?? false}
+            canRecord={(status?.audio ?? false) && canRecord()}
+            pendingText={pendingText}
+            onAudio={(recording) => void sendAudio(recording)}
           />
         </div>
 

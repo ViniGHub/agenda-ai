@@ -81,6 +81,12 @@ export interface Status {
   modelo: string | null
   agora: string
   persistente: boolean // false: additions disappear on restart (private) or after 2 hours (demo)
+  audio: boolean // voice messages can be transcribed
+}
+
+/** A voice message, transcribed. The page sends the text to the chat like a typed message. */
+export interface Transcript {
+  texto: string
 }
 
 export interface Config {

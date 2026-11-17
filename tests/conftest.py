@@ -72,3 +72,17 @@ def sample_db(sample_ics, fake_embedder):
 
     events = load_events(sample_ics, date(2026, 11, 1), date(2027, 2, 1))
     return SqliteEventStore.in_memory(events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)
+
+
+class FakeTranscriber:
+    """Returns a fixed text (or raises it) and records what it was sent."""
+
+    def __init__(self, text="marca dentista quinta às 15h"):
+        self.text = text
+        self.received = []
+
+    def transcribe(self, audio, filename):
+        self.received.append((len(audio), filename))
+        if isinstance(self.text, Exception):
+            raise self.text
+        return self.text

@@ -16,6 +16,9 @@ The chat (.../perguntar) also takes new appointments. An explicit order with a d
 describes an appointment ("dentista quinta às 15h") comes back as a question; a missing day or
 time comes back as a form to complete. AnswerOut.acao says which one happened.
 
+Voice messages: .../transcrever takes the recorded audio (raw body, Content-Type audio/*) and
+returns the text; the page then sends that text to .../perguntar like a typed message.
+
 Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into an in-memory private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
@@ -37,6 +40,7 @@ from typing import Callable, Literal
 
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
@@ -47,6 +51,7 @@ from .config import ROOT, TZ
 from .drafting import NoEventError, Suggestion, draft_from_text, explicit_request
 from .editing import MAX_IMPORT_CHARS, EventDraft, ImportError_, import_events
 from .llm import LLMError, UnavailableModel
+from .speech import AUDIO_TYPES, Transcriber, UnavailableTranscriber
 from .store import CREATED, IMPORTED, SqliteEventStore, StoredEvent
 
 WEB_DIST = ROOT / "web" / "dist"
@@ -55,6 +60,8 @@ DEMO_COOKIE = "agenda_demo"
 DEMO_SESSION_SECONDS = 2 * 60 * 60
 DEMO_MAX_SESSIONS = 200
 MAX_EVENTS_PER_AGENDA = 3_000
+MAX_AUDIO_BYTES = 2_000_000  # a minute of speech is ~250 KB in Opus and ~1 MB in AAC
+MIN_AUDIO_BYTES = 500
 
 
 # ---------- contract ----------
@@ -132,6 +139,7 @@ class StatusOut(BaseModel):
     modelo: str | None
     agora: datetime
     persistente: bool  # False: what is added here disappears when the server restarts (or, in the demo, in 2 hours)
+    audio: bool  # voice messages can be transcribed
 
 
 class ConfigOut(BaseModel):
@@ -157,6 +165,10 @@ class SuggestionOut(DraftOut):
     """The form, filled in from one sentence. Nothing was saved: the person reviews it and sends the form."""
 
     tokens: int
+
+
+class TranscriptOut(BaseModel):
+    texto: str  # what was said; the page sends it to .../perguntar
 
 
 class ImportIn(BaseModel):
@@ -220,6 +232,7 @@ class AppState:
     # One lock for everything: the SQLite connections are shared between threads, and the
     # LLM quota (tokens per minute) is shared by every workspace anyway.
     lock: threading.Lock = field(default_factory=threading.Lock)
+    transcriber: Transcriber = field(default_factory=UnavailableTranscriber)
 
     def private_for(self, user: User) -> Workspace:
         key = user.sub or user.email
@@ -252,6 +265,7 @@ def load_state() -> AppState:
     """Loads the model once, indexes the demo agenda in memory and connects to the database if configured."""
     from .embeddings import E5Embedder
     from .llm import GroqModel
+    from .speech import GroqTranscriber
     from .sample import build as build_sample
 
     today = datetime.now(TZ).date()
@@ -262,6 +276,10 @@ def load_state() -> AppState:
         llm_model = model.model
     except LLMError as error:
         model, llm_model = UnavailableModel(str(error)), None
+    try:
+        transcriber: Transcriber = GroqTranscriber()
+    except LLMError as error:
+        transcriber = UnavailableTranscriber(str(error))
 
     def memory_workspace(path: Path | None, origin: str) -> Workspace:
         events = load_events(path, first_day, last_day + timedelta(days=1)) if path else []
@@ -288,7 +306,7 @@ def load_state() -> AppState:
         def new_private(user: User) -> Workspace:
             return memory_workspace(own_ics, "arquivo" if own_ics else "privada")
 
-    return AppState(demo, llm_model, new_private)
+    return AppState(demo, llm_model, new_private, transcriber=transcriber)
 
 
 class RateLimiter:
@@ -330,6 +348,7 @@ def create_app(
     limiter = limiter or RateLimiter(int(os.getenv("AGENDA_IA_LIMITE", "20")), 600)
     write_limiter = RateLimiter(int(os.getenv("AGENDA_IA_LIMITE_ESCRITA", "30")), 600)
     login_limiter = RateLimiter(10, 600)
+    audio_limiter = RateLimiter(int(os.getenv("AGENDA_IA_LIMITE_AUDIO", "15")), 600)
     auth = auth or AuthSettings.from_env()
 
     @asynccontextmanager
@@ -337,7 +356,7 @@ def create_app(
         app.state.agenda = load()
         yield
 
-    app = FastAPI(title="agenda-ia", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="agenda-ia", version="0.5.0", lifespan=lifespan)
 
     def state(request: Request) -> AppState:
         return request.app.state.agenda
@@ -368,7 +387,7 @@ def create_app(
             total = ws.store.count()
         return StatusOut(origem=ws.origin, eventos=total, de=ws.first_day, ate=ws.last_day,
                          llm=s.llm_model is not None, modelo=s.llm_model, agora=datetime.now(TZ),
-                         persistente=ws.persistent)
+                         persistente=ws.persistent, audio=not isinstance(s.transcriber, UnavailableTranscriber))
 
     def agenda_of(s: AppState, ws: Workspace) -> list[EventOut]:
         with s.lock:
@@ -433,6 +452,31 @@ def create_app(
                 raise HTTPException(502, "Não consegui ler a frase agora. Preencha o formulário ou tente de novo.")
             tokens = model.usage.total - before
         return SuggestionOut(**draft_out(suggestion).model_dump(), tokens=tokens)
+
+    async def transcribe_in(s: AppState, request: Request) -> TranscriptOut:
+        if isinstance(s.transcriber, UnavailableTranscriber):
+            raise HTTPException(503, "A transcrição de áudio não está configurada: escreva a mensagem.")
+        kind = request.headers.get("content-type", "").split(";")[0].strip().lower()
+        extension = AUDIO_TYPES.get(kind)
+        if extension is None:
+            raise HTTPException(415, "Formato de áudio não suportado.")
+        if int(request.headers.get("content-length") or 0) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, "Áudio longo demais: grave até um minuto.")
+        if not audio_limiter.allow(client_id(request)):
+            raise HTTPException(429, "Muitos áudios seguidos. Tente de novo em alguns minutos.")
+        audio = await request.body()
+        if len(audio) > MAX_AUDIO_BYTES:
+            raise HTTPException(413, "Áudio longo demais: grave até um minuto.")
+        if len(audio) < MIN_AUDIO_BYTES:
+            raise HTTPException(422, "Áudio curto demais.")
+        try:
+            # The audio only lives in this request: sent to the transcriber, never stored.
+            text = await run_in_threadpool(s.transcriber.transcribe, audio, f"mensagem.{extension}")
+        except LLMError:
+            raise HTTPException(502, "Não consegui transcrever o áudio agora. Tente de novo ou escreva.")
+        if not text:
+            raise HTTPException(422, "Não entendi o áudio. Fale mais perto do microfone e tente de novo.")
+        return TranscriptOut(texto=text[:MAX_QUESTION_CHARS])
 
     def add_to(s: AppState, ws: Workspace, draft: EventDraft) -> EventOut:
         event = draft.to_event()
@@ -509,6 +553,10 @@ def create_app(
     def demo_interpret(body: SentenceIn, request: Request) -> SuggestionOut:
         return interpret_in(state(request), demo_workspace(request), body, request)
 
+    @app.post("/api/demo/transcrever", response_model=TranscriptOut, dependencies=[Depends(same_site_only)])
+    async def demo_transcribe(request: Request) -> TranscriptOut:
+        return await transcribe_in(state(request), request)
+
     @app.post("/api/demo/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def demo_add(draft: EventDraft, request: Request, response: Response) -> EventOut:
@@ -541,6 +589,10 @@ def create_app(
     @app.post("/api/minha/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
     def own_interpret(body: SentenceIn, request: Request, user: User = Depends(require_user)) -> SuggestionOut:
         return interpret_in(state(request), private_workspace(request, user), body, request)
+
+    @app.post("/api/minha/transcrever", response_model=TranscriptOut, dependencies=[Depends(same_site_only)])
+    async def own_transcribe(request: Request, user: User = Depends(require_user)) -> TranscriptOut:
+        return await transcribe_in(state(request), request)
 
     @app.post("/api/minha/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])

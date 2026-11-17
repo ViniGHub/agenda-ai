@@ -81,6 +81,8 @@ def test_private_routes_need_a_session(client):
     assert client.get("/api/minha/agenda").status_code == 401
     assert client.post("/api/minha/perguntar", json={"pergunta": "amanhã?"}, headers=HEADERS).status_code == 401
     assert client.post("/api/minha/interpretar", json={"frase": "dentista amanhã"}, headers=HEADERS).status_code == 401
+    audio = {**HEADERS, "Content-Type": "audio/webm"}
+    assert client.post("/api/minha/transcrever", content=bytes(2000), headers=audio).status_code == 401
     assert client.created == []
 
 

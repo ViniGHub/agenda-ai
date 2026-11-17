@@ -1,7 +1,7 @@
 from datetime import date, datetime, timedelta
 
 import pytest
-from conftest import FakeModel
+from conftest import FakeModel, FakeTranscriber
 from fastapi.testclient import TestClient
 
 from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
@@ -9,15 +9,16 @@ from agenda_ia.assistant import Assistant
 from agenda_ia.auth import AuthSettings
 from agenda_ia.config import TZ
 from agenda_ia.llm import LLMError, UnavailableModel
+from agenda_ia.speech import UnavailableTranscriber
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 
 
-def _client(sample_db, fake_embedder, model, limit=20):
+def _client(sample_db, fake_embedder, model, limit=20, transcriber=None):
     def load():
         demo = Workspace(Assistant(sample_db, fake_embedder, model), "exemplo", date(2026, 11, 1), date(2027, 1, 31))
         llm = None if isinstance(model, UnavailableModel) else "fake"
-        return AppState(demo, llm, new_private=lambda user: demo)
+        return AppState(demo, llm, new_private=lambda user: demo, transcriber=transcriber or UnavailableTranscriber())
 
     auth = AuthSettings(client_id=None, allowed=frozenset(), secret="teste")
     return TestClient(create_app(load, RateLimiter(limit, 600), auth), base_url="https://testserver")
@@ -196,3 +197,64 @@ def test_write_it_down_button_reads_the_message_and_asks_first(sample_db, fake_e
         assert body["acao"]["tipo"] == "confirmar"  # even with "marca": the person has not seen the fields yet
         assert body["detalhes"]["chamadas"] == 1
         assert client.get("/api/demo/status").json()["eventos"] == before
+
+
+AUDIO = b"\x1a\x45\xdf\xa3" + bytes(2000)  # stands in for a short WebM recording
+
+
+def _audio(client, body=AUDIO, kind="audio/webm;codecs=opus", **headers):
+    return client.post("/api/demo/transcrever", content=body, headers={**HEADERS, "Content-Type": kind, **headers})
+
+
+def test_voice_message_becomes_text(sample_db, fake_embedder):
+    transcriber = FakeTranscriber("marca dentista quinta às 15h")
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=transcriber) as client:
+        assert client.get("/api/demo/status").json()["audio"] is True
+        response = _audio(client)
+    assert response.status_code == 200 and response.json() == {"texto": "marca dentista quinta às 15h"}
+    assert transcriber.received == [(len(AUDIO), "mensagem.webm")]
+
+
+@pytest.mark.parametrize("kind, extension", [("audio/mp4", "m4a"), ("audio/ogg;codecs=opus", "ogg"), ("audio/wav", "wav")])
+def test_each_browser_format_keeps_its_extension(sample_db, fake_embedder, kind, extension):
+    transcriber = FakeTranscriber()
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=transcriber) as client:
+        assert _audio(client, kind=kind).status_code == 200
+    assert transcriber.received[0][1] == f"mensagem.{extension}"
+
+
+@pytest.mark.parametrize(
+    "body, kind, status",
+    [
+        (AUDIO, "application/json", 415),
+        (AUDIO, "image/png", 415),
+        (b"x" * 100, "audio/webm", 422),  # too short to hold speech
+        (b"x" * 2_000_001, "audio/webm", 413),
+    ],
+)
+def test_bad_uploads_never_reach_the_transcriber(sample_db, fake_embedder, body, kind, status):
+    transcriber = FakeTranscriber()
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=transcriber) as client:
+        assert _audio(client, body=body, kind=kind).status_code == status
+    assert transcriber.received == []
+
+
+@pytest.mark.parametrize("text, status", [("", 422), (LLMError("fora do ar"), 502)])
+def test_silence_and_failures(sample_db, fake_embedder, text, status):
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=FakeTranscriber(text)) as client:
+        response = _audio(client)
+    assert response.status_code == status and isinstance(response.json()["detail"], str)
+
+
+def test_voice_needs_the_header_and_a_configured_transcriber(sample_db, fake_embedder):
+    with _client(sample_db, fake_embedder, FakeModel()) as client:
+        assert client.get("/api/demo/status").json()["audio"] is False
+        assert _audio(client).status_code == 503
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=FakeTranscriber()) as client:
+        refused = client.post("/api/demo/transcrever", content=AUDIO, headers={"Content-Type": "audio/webm"})
+        assert refused.status_code == 403
+
+
+def test_long_transcripts_fit_the_chat_box(sample_db, fake_embedder):
+    with _client(sample_db, fake_embedder, FakeModel(), transcriber=FakeTranscriber("palavra " * 100)) as client:
+        assert len(_audio(client).json()["texto"]) == 300

@@ -1,5 +1,5 @@
 // The only file that talks to the back-end.
-import type { AgendaEvent, Answer, AskMode, Config, Draft, EventDraft, ImportResult, Me, Space, Status, Suggestion } from './types'
+import type { AgendaEvent, Answer, AskMode, Config, Draft, EventDraft, ImportResult, Me, Space, Status, Suggestion, Transcript } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -68,4 +68,12 @@ export const addDraft = (space: Space, d: Draft) =>
     local: d.local,
     participantes: d.participantes,
     notas: d.notas,
+  })
+
+/** The recording goes up as it is (audio/webm or audio/mp4) and comes back as text. */
+export const transcribeAudio = (space: Space, audio: Blob) =>
+  request<Transcript>(`/api/${space}/transcrever`, {
+    method: 'POST',
+    body: audio,
+    headers: { 'Content-Type': audio.type || 'audio/webm' },
   })
