@@ -1,5 +1,5 @@
 // The only file that talks to the back-end.
-import type { AgendaEvent, Answer, Config, EventDraft, ImportResult, Me, Space, Status, Suggestion } from './types'
+import type { AgendaEvent, Answer, AskMode, Config, Draft, EventDraft, ImportResult, Me, Space, Status, Suggestion } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -48,10 +48,24 @@ export const logout = () => post<Me>('/api/logout')
 
 export const getStatus = (space: Space) => request<Status>(`/api/${space}/status`)
 export const getAgenda = (space: Space) => request<AgendaEvent[]>(`/api/${space}/agenda`)
-export const askQuestion = (space: Space, pergunta: string) => post<Answer>(`/api/${space}/perguntar`, { pergunta })
+export const askQuestion = (space: Space, pergunta: string, modo: AskMode = 'auto') =>
+  post<Answer>(`/api/${space}/perguntar`, { pergunta, modo })
 
 export const interpretSentence = (space: Space, frase: string) => post<Suggestion>(`/api/${space}/interpretar`, { frase })
 export const addEvent = (space: Space, draft: EventDraft) => post<AgendaEvent>(`/api/${space}/compromissos`, draft)
 export const deleteEvent = (space: Space, id: number) =>
   request<{ apagado: number }>(`/api/${space}/compromissos/${id}`, { method: 'DELETE' })
 export const importIcs = (conteudo: string) => post<ImportResult>('/api/minha/importar', { conteudo })
+
+/** A draft from the chat, sent as the form would send it (the server validates it again). */
+export const addDraft = (space: Space, d: Draft) =>
+  addEvent(space, {
+    titulo: d.titulo,
+    data: d.data ?? '',
+    dia_inteiro: d.dia_inteiro,
+    inicio: d.dia_inteiro ? null : d.inicio,
+    fim: d.dia_inteiro ? null : d.fim,
+    local: d.local,
+    participantes: d.participantes,
+    notas: d.notas,
+  })

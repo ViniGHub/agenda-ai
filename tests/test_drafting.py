@@ -4,7 +4,7 @@ import pytest
 from conftest import FakeModel
 
 from agenda_ia.config import TZ
-from agenda_ia.drafting import NoEventError, build_prompt, draft_from_text, parse_suggestion
+from agenda_ia.drafting import NoEventError, build_prompt, draft_from_text, explicit_request, parse_suggestion
 from agenda_ia.llm import LLMError
 
 NOW = datetime(2026, 11, 17, 10, 30, tzinfo=TZ)  # a Tuesday
@@ -110,3 +110,24 @@ def test_grounding_ignores_accents_case_and_plural():
 
 def test_title_starts_with_a_capital():
     assert parse_suggestion({**DENTIST, "titulo": "consulta"}, TODAY, SENTENCE).titulo == "Consulta"
+
+
+@pytest.mark.parametrize(
+    "message, expected",
+    [
+        ("marca dentista quinta às 15h", True),
+        ("Anota: almoço com a Ana sexta ao meio-dia", True),
+        ("me lembra de ligar para a Ana amanhã às 10h", True),
+        ("pode agendar reunião com a padaria segunda 9h?", True),
+        ("põe na agenda o show sábado 21h", True),
+        ("dentista quinta às 15h", False),  # only describes it: asked first
+        ("tenho que ir ao dentista quinta às 15h", False),
+        ("marcação de consulta quinta às 15h", False),  # whole words only
+    ],
+)
+def test_explicit_request(message, expected):
+    assert explicit_request(message) is expected
+
+
+def test_missing_text():
+    assert parse_suggestion({"titulo": "Padaria"}, TODAY, SENTENCE).missing_text() == "o dia e o horário"

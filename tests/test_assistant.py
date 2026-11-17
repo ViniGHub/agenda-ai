@@ -53,3 +53,56 @@ def test_describe_period():
     assert describe_period(None, None) == "toda a agenda"
     assert describe_period(datetime(2026, 11, 17, tzinfo=TZ), datetime(2026, 11, 18, tzinfo=TZ)) == "17/11/2026"
     assert describe_period(datetime(2026, 11, 16, tzinfo=TZ), None) == "a partir de 16/11/2026"
+
+
+NOTE = {"tipo": "anotar", "de": None, "ate": None, "busca": None}
+DENTIST_DRAFT = {"titulo": "Dentista", "data": "2026-11-19", "dia_inteiro": False, "inicio": "15:00", "fim": None,
+                 "local": "", "participantes": [], "notas": None}
+
+
+def test_new_appointment_is_read_not_answered(sample_db, fake_embedder):
+    model = FakeModel(NOTE, DENTIST_DRAFT)
+    result = Assistant(sample_db, fake_embedder, model).ask("marca dentista quinta às 15h", NOW)
+    assert result.suggestion is not None and result.suggestion.titulo == "Dentista"
+    assert result.retrieved == [] and result.strategy == "cadastro pela conversa"
+    assert result.usage.calls == 2  # understand + read the appointment; no answer call
+    assert "Frase: marca dentista quinta às 15h" in model.sent[1][1]
+
+
+def test_message_without_an_appointment_is_answered_as_a_question(sample_db, fake_embedder):
+    model = FakeModel(NOTE, {"titulo": None}, {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
+    result = Assistant(sample_db, fake_embedder, model).ask("dentista", NOW)
+    assert result.suggestion is None and result.strategy == "busca híbrida"
+    assert result.query_note and "anotar" in result.query_note
+
+
+def test_model_failure_while_reading_the_appointment(sample_db, fake_embedder):
+    from agenda_ia.llm import LLMError
+
+    model = FakeModel(NOTE, LLMError("fora do ar"))
+    result = Assistant(sample_db, fake_embedder, model).ask("marca dentista quinta às 15h", NOW)
+    assert result.suggestion is None and "Não consegui ler o compromisso" in result.answer.text
+
+
+def test_only_questions_when_notes_are_off(sample_db, fake_embedder):
+    model = FakeModel(NOTE, {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
+    result = Assistant(sample_db, fake_embedder, model).ask("dentista quinta às 15h", NOW, mode="pergunta")
+    assert result.suggestion is None and result.query.tipo == "buscar" and result.answer.found
+
+
+def test_question_mark_without_an_order_is_a_question(sample_db, fake_embedder):
+    model = FakeModel(NOTE, {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
+    result = Assistant(sample_db, fake_embedder, model).ask("dentista quinta às 15h?", NOW)
+    assert result.suggestion is None and result.query.tipo == "buscar" and "?" in result.query_note
+
+
+def test_question_mark_with_an_order_is_still_a_note(sample_db, fake_embedder):
+    model = FakeModel(NOTE, DENTIST_DRAFT)
+    result = Assistant(sample_db, fake_embedder, model).ask("pode marcar dentista quinta às 15h?", NOW)
+    assert result.suggestion is not None
+
+
+def test_write_it_down_skips_the_understanding_call(sample_db, fake_embedder):
+    model = FakeModel(DENTIST_DRAFT)
+    result = Assistant(sample_db, fake_embedder, model).ask("dentista quinta às 15h", NOW, mode="anotar")
+    assert result.suggestion is not None and result.usage.calls == 1

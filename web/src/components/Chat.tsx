@@ -5,13 +5,26 @@ import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { SmoothInput } from '@/components/ui/skiper-ui/smooth-input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
-import type { Answer } from '../types'
+import type { AgendaEvent, Answer, AskMode } from '../types'
 import { AnswerText } from './AnswerText'
+import { NoteCard, type NoteState } from './NoteCard'
 
 export type ChatMessage =
   | { id: number; role: 'user'; text: string }
-  | { id: number; role: 'assistant'; answer: Answer }
+  // note/saved: where a "marca dentista quinta às 15h" reply stands after the person acted on it
+  // mode: how the message was sent; offerUsed: the "write it down" link under a "not found" reply was clicked
+  | { id: number; role: 'assistant'; answer: Answer; mode: AskMode; note?: NoteState; saved?: AgendaEvent | null; offerUsed?: boolean }
   | { id: number; role: 'error'; text: string }
+
+/** What the sticky note under a reply can do; each takes the reply's message id. */
+export interface NoteHandlers {
+  confirm: (messageId: number) => Promise<void>
+  undo: (messageId: number) => Promise<void>
+  edit: (messageId: number) => void
+  dismiss: (messageId: number) => void
+  askInstead: (messageId: number) => void
+  writeDown: (messageId: number) => void // a "not found" reply to a statement: read it as a new appointment
+}
 
 const MAX_CHARS = 300
 
@@ -21,14 +34,16 @@ interface Props {
   disabled: boolean
   selectedId: number | null
   ideas: string[]
+  canNote: boolean // a language model is configured, so messages can be read as appointments
   emptyNote?: ReactNode
   onSend: (question: string) => void
   onSelect: (messageId: number) => void
   onShowEvent: (eventId: number) => void
+  notes: NoteHandlers
 }
 
 /** The left page of the notebook: questions in red handwriting, answers typed underneath. */
-export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote, onSend, onSelect, onShowEvent }: Props) {
+export function Chat({ messages, pending, disabled, selectedId, ideas, canNote, emptyNote, onSend, onSelect, onShowEvent, notes }: Props) {
   const [draft, setDraft] = useState('')
   const listRef = useRef<HTMLDivElement>(null)
   const reduceMotion = useReducedMotion()
@@ -47,6 +62,7 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
   }
 
   let questionNumber = 0
+  let lastUserText = ''
 
   return (
     <section aria-label="Conversa" className="flex min-h-[34rem] flex-1 flex-col lg:min-h-0">
@@ -82,6 +98,7 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
 
             if (message.role === 'user') {
               questionNumber += 1
+              lastUserText = message.text
               return (
                 <motion.div key={message.id} {...enter}>
                   <Line margin={<span className="font-mono text-[11px] text-pencil">P.{String(questionNumber).padStart(2, '0')}</span>}>
@@ -105,6 +122,10 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
 
             const { answer } = message
             const selected = message.id === selectedId
+            // "dentista quinta às 15h na clínica Sorriso" taken as a question and not found: offer to write it down.
+            const offerNote =
+              canNote && message.mode === 'auto' && !answer.acao && !answer.encontrou && answer.detalhes.tipo !== 'anotar' &&
+              !lastUserText.includes('?')
             return (
               <motion.div key={message.id} {...enter}>
                 <Line
@@ -118,6 +139,27 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
                 >
                   <div className="pb-[var(--line)]">
                     <AnswerText text={answer.resposta} />
+                    {offerNote && !message.offerUsed && (
+                      <p className="leading-[var(--line)]">
+                        <InkLink disabled={pending} onClick={() => notes.writeDown(message.id)}
+                          className="font-hand text-[1.35rem] text-primary">
+                          → não era pergunta? anotar como compromisso
+                        </InkLink>
+                      </p>
+                    )}
+                    {answer.acao && (
+                      <NoteCard
+                        action={answer.acao}
+                        state={message.note ?? (answer.acao.tipo === 'anotado' ? 'anotado' : 'aberto')}
+                        saved={message.saved ?? answer.acao.evento}
+                        onConfirm={() => notes.confirm(message.id)}
+                        onUndo={() => notes.undo(message.id)}
+                        onEdit={() => notes.edit(message.id)}
+                        onDismiss={() => notes.dismiss(message.id)}
+                        onAskInstead={() => notes.askInstead(message.id)}
+                        onShowEvent={onShowEvent}
+                      />
+                    )}
                     {answer.fontes.length > 0 && (
                       <p className="leading-[var(--line)]">
                         <span className="mr-2 font-mono text-[11px] tracking-wide text-pencil uppercase">fontes</span>
@@ -169,7 +211,7 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
           maxLength={MAX_CHARS}
           disabled={disabled}
           autoComplete="off"
-          placeholder={disabled ? 'abrindo a agenda…' : 'escreva sua pergunta…'}
+          placeholder={disabled ? 'abrindo a agenda…' : 'pergunte, ou peça para anotar…'}
           onChange={(event) => setDraft(event.target.value)}
           wrapperClassName="flex-1 min-w-0"
           className="font-hand text-[1.6rem] text-primary placeholder:text-pencil/70"
@@ -183,7 +225,7 @@ export function Chat({ messages, pending, disabled, selectedId, ideas, emptyNote
           disabled={!draft.trim() || pending || disabled}
           className={cn(STAMP_BUTTON, '-rotate-2 px-3 py-1.5 text-[11px]')}
         >
-          Perguntar
+          Enviar
         </Button>
       </form>
     </section>

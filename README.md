@@ -1,10 +1,10 @@
 # agenda-ia
 
-Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu.
+Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o dentista?", "o que ficou combinado com a padaria?") e receba a resposta citando os compromissos de onde ela saiu. Ou peça para anotar, na mesma conversa: "marca dentista quinta às 15h".
 
 **Demonstração:** https://agenda-ia-924443163141.us-east1.run.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
 
-> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário ou numa frase) e importação de `.ics`. Falta: avaliação automática.
+> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa) e importação de `.ics`. Falta: avaliação automática.
 
 A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
 
@@ -36,12 +36,17 @@ pergunta
        listar/contar com termos → busca híbrida ampla (top 20), sem agrupar, em ordem
   3. responder (LLM): só com os compromissos numerados, citando os números → validação em código
 
-frase ("dentista quinta às 15h na clínica Sorriso")
-  1. interpretar (LLM, JSON): título, dia, horário, local, pessoas, notas → cada campo conferido em código
-  2. o formulário abre preenchido; a pessoa confere, completa o que falta e anota (a rota normal de cadastro)
+mensagem que pede para anotar ("marca dentista quinta às 15h"), na própria conversa
+  1. entender (a mesma chamada das perguntas): tipo = anotar
+  2. ler o compromisso (LLM, JSON): título, dia, horário, local, pessoas, notas → cada campo conferido em código
+  3. decidir em código: pedido explícito e completo → anota e oferece "desfazer"
+                        só descreve um compromisso   → pergunta antes ("anotar?")
+                        falta dia ou horário         → abre o formulário preenchido
+
+frase no bilhete do "Novo compromisso" → o passo 2 acima → o formulário abre preenchido, nada é salvo
 
 web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
-     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar, interpretar, compromissos (criar/apagar)
+     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, compromissos (criar/apagar)
      /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
      /api/login · /api/logout · /api/me · /api/config
 ```
@@ -71,11 +76,28 @@ O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`ap
 
 O LLM é o `openai/gpt-oss-120b` no plano gratuito do Groq (8.000 tokens por minuto). Cada pergunta faz duas chamadas e gasta uns 2 a 4 mil tokens.
 
+## Anotar pela conversa
+
+A ideia é marcar um compromisso tão rápido quanto mandar uma mensagem, pensando no celular. Na mesma caixa das perguntas:
+
+- **"marca dentista quinta às 15h na clínica Sorriso"**: pedido explícito, com dia e horário. Anota na hora e responde "Anotei na agenda: Dentista, quinta-feira, 19/11/2026, 15:00–16:00 (Clínica Sorriso)", com um bilhete que tem **desfazer** e **ver na agenda**.
+- **"dentista quinta às 15h"**: só descreve um compromisso. Nada é salvo: o bilhete pergunta "Quer que eu anote?", com **Anotar**, **editar** (abre o formulário preenchido) e **era uma pergunta** (responde como pergunta).
+- **"marca reunião com a padaria semana que vem"**: falta o dia e o horário. O bilhete leva ao formulário preenchido, com os buracos marcados.
+- **"tenho dentista quinta?"**: é pergunta, e a resposta vem da agenda como sempre.
+
+Quem decide se a mensagem é pergunta ou pedido é o modelo, na mesma chamada que já entendia as perguntas (um quarto tipo, `anotar`, além de listar, buscar e contar). Mas o que salva é decidido em código:
+
+- **Só salva sem perguntar** quando a mensagem tem um verbo de pedido (marca, anota, agenda, coloca, põe, cria, me lembra, salva, registra…), traz dia e horário e passa na mesma validação do formulário. Um engano tem desfazer.
+- **"?" sem verbo de pedido é pergunta**, mesmo que o modelo diga o contrário: "dentista quinta às 15h?" nunca vira compromisso.
+- **A fronteira é difícil**, e o código não finge que não é: "dentista quinta às 15h na clínica Sorriso" às vezes é classificado como pergunta. Quando uma mensagem sem "?" é respondida com "não encontrei", o chat oferece **"não era pergunta? anotar como compromisso"**, que lê a mensagem e pergunta antes de salvar (nesse caminho nada é salvo sem a pessoa ver os campos).
+
+Um pedido de anotar custa duas chamadas ao modelo (entender e ler o compromisso), cerca de 3 mil tokens, o mesmo que uma pergunta.
+
 ## Cadastro por frase
 
-No "Novo compromisso", dá para escrever do seu jeito, por exemplo "almoço com a Ana amanhã meio-dia no Outback", e apertar **Preencher**. O modelo devolve os campos do formulário, os campos que vieram da frase ficam em marca-texto e os que faltam ("reunião com a padaria semana que vem" não diz o dia nem a hora) ficam marcados com "falta". **Nada é salvo** até a pessoa apertar "Anotar na agenda", que usa a mesma rota e a mesma validação do formulário. O modelo nunca escreve na agenda.
+No "Novo compromisso", um bilhete ao lado do formulário recebe a frase, por exemplo "almoço com a Ana amanhã meio-dia no Outback". **Preencher** devolve os campos do formulário; os que vieram da frase ficam em marca-texto e os que faltam ("reunião com a padaria semana que vem" não diz o dia nem a hora) ficam marcados com "falta". **Nada é salvo** até a pessoa apertar "Anotar na agenda", que usa a mesma rota e a mesma validação do formulário.
 
-A rota é `POST /api/{demo|minha}/interpretar` ([`drafting.py`](src/agenda_ia/drafting.py)). Ela usa o mesmo calendário de datas exatas do entendimento das perguntas e a mesma cota de uso (cada frase é uma chamada, cerca de 1.500 tokens). O JSON do modelo não é confiável, então o código confere campo por campo:
+A leitura do compromisso é a mesma da conversa ([`drafting.py`](src/agenda_ia/drafting.py)), exposta em `POST /api/{demo|minha}/interpretar`. Ela usa o mesmo calendário de datas exatas do entendimento das perguntas e a mesma cota de uso (cada frase é uma chamada, cerca de 1.500 tokens). O JSON do modelo não é confiável, então o código confere campo por campo:
 
 - **Um campo ruim não derruba a frase:** data inválida ou a mais de dois anos, horário fora do formato, fim antes do início, participante que não é texto. O campo volta vazio e o formulário pede de novo.
 - **Nada é adivinhado:** frase sem dia certo deixa o dia vazio, em vez de supor "hoje".
@@ -194,3 +216,5 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Cadastro e exclusão de compromissos, importação de `.ics`, Postgres com pgvector para a agenda privada
 - [x] Neon ligado em produção: a agenda privada fica guardada no Postgres
 - [x] Cadastro por frase ("dentista quinta às 15h na clínica Sorriso"): o formulário abre preenchido e nada é salvo sem confirmação
+- [x] Anotar pela conversa: pedido explícito anota com desfazer; o que não estiver claro pergunta antes
+- [ ] Anotar por áudio: gravar no celular, transcrever (Whisper no Groq) e seguir o mesmo caminho da conversa

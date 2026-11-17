@@ -1,17 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { XIcon } from 'lucide-react'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
 import { addEvent, interpretSentence } from '../api'
-import type { AgendaEvent, Space, Suggestion } from '../types'
+import type { AgendaEvent, Draft, Space } from '../types'
 
 interface Props {
   open: boolean
   space: Space
   llm: boolean // without a language model the sentence box is hidden and the form is filled by hand
+  seed: Draft | null // opened from a chat note: start filled in with what the model read
   onOpenChange: (open: boolean) => void
   onSaved: (event: AgendaEvent) => void
 }
@@ -24,12 +26,15 @@ type FieldName = keyof FormState
 
 const MISSING_NAMES: Record<string, string> = { data: 'o dia', inicio: 'o horário' }
 
+const EXAMPLES = ['dentista quinta às 15h na clínica Sorriso', 'almoço com a Ana amanhã ao meio-dia', 'aniversário da Bia dia 28']
+
 /**
- * "New appointment", as a page torn from the same notebook. A sentence can fill it in first
- * (the model reads it on the server); either way nothing is saved until "Anotar na agenda".
+ * "New appointment", as a page torn from the same notebook, with a sticky note beside it where one
+ * sentence can fill the page in (the model reads it on the server). Either way nothing is saved
+ * until "Anotar na agenda".
  * The server validates everything again.
  */
-export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
+export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Props) {
   const [form, setForm] = useState<FormState>({ ...EMPTY, data: today() })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -48,7 +53,9 @@ export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
       setSentenceNote(null)
       setFilled(new Set())
       setMissing(new Set())
+      if (seed) apply(seed, 'conversa')
     }
+    // reset (and fill from the chat note) only when the dialog opens
   }, [open])
 
   const set = (field: FieldName) => (value: string | boolean) => {
@@ -59,7 +66,7 @@ export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
 
   const stateOf = (field: FieldName) => (missing.has(field) ? 'missing' : filled.has(field) ? 'filled' : undefined)
 
-  function apply(s: Suggestion) {
+  function apply(s: Draft, source: 'frase' | 'conversa') {
     const next: FormState = {
       titulo: s.titulo,
       data: s.data ?? '', // left empty on purpose: the form asks instead of guessing
@@ -73,11 +80,12 @@ export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
     setForm(next)
     setFilled(new Set((Object.keys(next) as FieldName[]).filter((k) => next[k] !== '' && next[k] !== false)))
     setMissing(new Set(s.faltando))
+    const lead = source === 'conversa' ? 'veio da conversa.' : 'entendi assim.'
     setSentenceNote({
       failed: false,
       text: s.faltando.length
-        ? `entendi assim. falta ${s.faltando.map((f) => MISSING_NAMES[f]).join(' e ')}; o resto, confira antes de anotar.`
-        : 'entendi assim. confira os campos marcados: nada foi anotado ainda.',
+        ? `${lead} falta ${s.faltando.map((f) => MISSING_NAMES[f]).join(' e ')}; o resto, confira antes de anotar.`
+        : `${lead} confira os campos marcados: nada foi anotado ainda.`,
     })
     // Next stop: the first gap to fill, or the button that saves.
     requestAnimationFrame(() => {
@@ -95,7 +103,7 @@ export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
     setSentenceNote(null)
     setError(null)
     try {
-      apply(await interpretSentence(space, text))
+      apply(await interpretSentence(space, text), 'frase')
     } catch (e) {
       setSentenceNote({ failed: true, text: e instanceof Error ? e.message : String(e) })
     } finally {
@@ -133,92 +141,140 @@ export function EventForm({ open, space, llm, onOpenChange, onSaved }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="paper-plain max-h-[92dvh] overflow-y-auto border-border bg-card sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle className="font-heading text-2xl font-semibold tracking-tight">Novo compromisso</DialogTitle>
-          <DialogDescription className="font-hand text-[1.2rem] text-pencil">
-            {space === 'demo'
-              ? 'fica só para você, nesta agenda fictícia, por duas horas.'
-              : 'entra na sua agenda e já pode ser perguntado.'}
-          </DialogDescription>
-        </DialogHeader>
-
-        {llm && (
-          <form onSubmit={interpret} className="grid gap-1.5 border-b border-dashed border-border pb-4">
-            <Label htmlFor="frase" className="font-mono text-[11px] font-normal tracking-wide text-pencil uppercase">
-              Em uma frase
-            </Label>
-            <div className="flex gap-2">
-              <Input id="frase" autoFocus autoComplete="off" maxLength={300} value={sentence}
-                onChange={(e) => setSentence(e.target.value)} placeholder="dentista quinta às 15h na clínica Sorriso" />
-              <Button type="submit" variant="ghost" disabled={reading || !sentence.trim()}
-                className={cn(STAMP_BUTTON, 'h-8 shrink-0 px-3 text-[11px]')}>
-                {reading ? 'Lendo…' : 'Preencher'}
-              </Button>
-            </div>
-            <p role="status" className={cn('font-hand text-[1.15rem] leading-tight', sentenceNote?.failed ? 'text-primary' : 'text-pencil')}>
-              {sentenceNote?.text ??
-                (space === 'demo'
-                  ? 'um modelo de linguagem preenche os campos abaixo e você confere. é uma demonstração: não use dados pessoais.'
-                  : 'um modelo de linguagem preenche os campos abaixo e você confere antes de anotar.')}
-            </p>
-          </form>
-        )}
-
-        <form onSubmit={submit} className="grid gap-4">
-          <Field label="O quê" htmlFor="titulo" state={stateOf('titulo')}>
-            <Input id="titulo" required maxLength={120} autoFocus={!llm} value={form.titulo}
-              onChange={(e) => set('titulo')(e.target.value)} placeholder="Dentista, reunião com a padaria…" />
-          </Field>
-
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Dia" htmlFor="data" state={stateOf('data')}>
-              <Input id="data" type="date" required value={form.data} onChange={(e) => set('data')(e.target.value)} />
-            </Field>
-            <div className="flex items-end gap-2 pb-2">
-              <Checkbox id="dia-inteiro" checked={form.diaInteiro} onCheckedChange={(v) => set('diaInteiro')(v === true)} />
-              <Label htmlFor="dia-inteiro" className="font-normal">
-                <span className={cn(stateOf('diaInteiro') === 'filled' && 'marker')}>Dia inteiro</span>
-              </Label>
-            </div>
-          </div>
-
-          {!form.diaInteiro && (
-            <div className="grid grid-cols-2 gap-3">
-              <Field label="Começa" htmlFor="inicio" state={stateOf('inicio')}>
-                <Input id="inicio" type="time" required value={form.inicio} onChange={(e) => set('inicio')(e.target.value)} />
-              </Field>
-              <Field label="Termina (opcional)" htmlFor="fim" state={stateOf('fim')}>
-                <Input id="fim" type="time" value={form.fim} onChange={(e) => set('fim')(e.target.value)} />
-              </Field>
-            </div>
+      {/* Two separate pieces of paper: the sentence on a sticky note beside the page, the form on the page. */}
+      <DialogContent
+        showCloseButton={false}
+        className={cn('max-h-[94dvh] overflow-y-auto bg-transparent p-1 shadow-none ring-0', llm ? 'sm:max-w-[54rem]' : 'sm:max-w-lg')}
+      >
+        <div className={cn('grid items-start gap-6', llm && 'md:grid-cols-[17.5rem_1fr]')}>
+          {llm && (
+            <aside
+              aria-label="Escrever em uma frase"
+              className="relative mx-2 mt-5 -rotate-1 rounded-[3px] bg-card bg-[linear-gradient(color-mix(in_oklab,var(--marker)_70%,transparent),color-mix(in_oklab,var(--marker)_70%,transparent))] px-4 pt-5 pb-3 shadow-[0_1px_0_rgb(0_0_0/0.08),0_14px_24px_-14px_rgb(0_0_0/0.45)] md:mx-0 md:mt-10 md:-rotate-2"
+            >
+              <span aria-hidden className="absolute -top-2.5 left-1/2 h-5 w-16 -translate-x-1/2 rotate-2 bg-card/70 shadow-sm" />
+              <form onSubmit={interpret} className="grid gap-2">
+                <Label htmlFor="frase" className="font-hand text-[1.75rem] leading-none font-normal text-primary">
+                  diga em uma frase
+                </Label>
+                <p className="text-[13px] leading-snug text-foreground/75">
+                  o modelo preenche o formulário; nada é anotado sem você conferir.
+                </p>
+                <textarea
+                  id="frase"
+                  autoFocus
+                  rows={4}
+                  maxLength={300}
+                  value={sentence}
+                  onChange={(e) => setSentence(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault() // Enter fills the form; Shift+Enter breaks the line
+                      e.currentTarget.form?.requestSubmit()
+                    }
+                  }}
+                  placeholder="dentista quinta às 15h na clínica Sorriso, levar o raio-x"
+                  className="w-full resize-none rounded-[3px] border border-foreground/15 bg-card/70 px-3 py-2 font-hand text-[1.35rem] leading-snug text-primary outline-none placeholder:text-pencil/70 focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40"
+                />
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-mono text-[11px] text-pencil tabular-nums">{sentence.length}/300</span>
+                  <Button type="submit" variant="ghost" disabled={reading || !sentence.trim()}
+                    className={cn(STAMP_BUTTON, 'h-8 shrink-0 bg-card/60 px-3 text-[11px]')}>
+                    {reading ? 'Lendo…' : 'Preencher →'}
+                  </Button>
+                </div>
+                <p role="status" className={cn('min-h-[1.2rem] font-hand text-[1.15rem] leading-tight', sentenceNote?.failed ? 'text-primary' : 'text-foreground/70')}>
+                  {sentenceNote?.text ?? (space === 'demo' ? 'é uma demonstração: não use dados pessoais.' : '')}
+                </p>
+                <div className="border-t border-dashed border-foreground/20 pt-2">
+                  <p className="font-mono text-[10px] tracking-wide text-pencil uppercase">experimente</p>
+                  <ul>
+                    {EXAMPLES.map((example) => (
+                      <li key={example}>
+                        <button type="button" onClick={() => setSentence(example)}
+                          className="text-left font-hand text-[1.15rem] leading-snug text-foreground/80 underline-offset-2 hover:text-primary hover:underline">
+                          → {example}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              </form>
+            </aside>
           )}
 
-          <Field label="Onde (opcional)" htmlFor="local" state={stateOf('local')}>
-            <Input id="local" maxLength={120} value={form.local} onChange={(e) => set('local')(e.target.value)} />
-          </Field>
-          <Field label="Com quem (separe por vírgula)" htmlFor="participantes" state={stateOf('participantes')}>
-            <Input id="participantes" value={form.participantes} onChange={(e) => set('participantes')(e.target.value)}
-              placeholder="Ana, Bruno" />
-          </Field>
-          <Field label="Notas (opcional)" htmlFor="notas" state={stateOf('notas')}>
-            <textarea id="notas" maxLength={1000} rows={3} value={form.notas} onChange={(e) => set('notas')(e.target.value)}
-              placeholder="o que levar, o que combinar…"
-              className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50" />
-          </Field>
+          <div className="paper-plain relative grid gap-4 rounded-xl bg-card p-5 text-popover-foreground ring-1 ring-foreground/10 shadow-[0_24px_48px_-24px_rgb(0_0_0/0.45)]">
+            <DialogClose asChild>
+              <Button variant="ghost" size="icon-sm" className="absolute top-2 right-2">
+                <XIcon />
+                <span className="sr-only">Fechar</span>
+              </Button>
+            </DialogClose>
+            <DialogHeader>
+              <DialogTitle className="font-heading text-2xl font-semibold tracking-tight">Novo compromisso</DialogTitle>
+              <DialogDescription className="font-hand text-[1.2rem] text-pencil">
+                {space === 'demo'
+                  ? 'fica só para você, nesta agenda fictícia, por duas horas.'
+                  : 'entra na sua agenda e já pode ser perguntado.'}
+              </DialogDescription>
+            </DialogHeader>
 
-          {error && <p role="alert" className="font-hand text-[1.25rem] leading-tight text-primary">{error}</p>}
+            <form onSubmit={submit} className="grid gap-4">
+              <Field label="O quê" htmlFor="titulo" state={stateOf('titulo')}>
+                <Input id="titulo" required maxLength={120} autoFocus={!llm} value={form.titulo}
+                  onChange={(e) => set('titulo')(e.target.value)} placeholder="Dentista, reunião com a padaria…" />
+              </Field>
 
-          <div className="flex items-center justify-end gap-4">
-            <button type="button" onClick={() => onOpenChange(false)} className="font-mono text-[11px] tracking-wide text-pencil uppercase">
-              cancelar
-            </button>
-            <Button ref={submitRef} type="submit" variant="ghost" disabled={saving}
-              className={cn(STAMP_BUTTON, '-rotate-1 px-4 py-2 text-[12px]')}>
-              {saving ? 'Anotando…' : 'Anotar na agenda'}
-            </Button>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Dia" htmlFor="data" state={stateOf('data')}>
+                  <Input id="data" type="date" required value={form.data} onChange={(e) => set('data')(e.target.value)} />
+                </Field>
+                <div className="flex items-end gap-2 pb-2">
+                  <Checkbox id="dia-inteiro" checked={form.diaInteiro} onCheckedChange={(v) => set('diaInteiro')(v === true)} />
+                  <Label htmlFor="dia-inteiro" className="font-normal">
+                    <span className={cn(stateOf('diaInteiro') === 'filled' && 'marker')}>Dia inteiro</span>
+                  </Label>
+                </div>
+              </div>
+
+              {!form.diaInteiro && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Começa" htmlFor="inicio" state={stateOf('inicio')}>
+                    <Input id="inicio" type="time" required value={form.inicio} onChange={(e) => set('inicio')(e.target.value)} />
+                  </Field>
+                  <Field label="Termina (opcional)" htmlFor="fim" state={stateOf('fim')}>
+                    <Input id="fim" type="time" value={form.fim} onChange={(e) => set('fim')(e.target.value)} />
+                  </Field>
+                </div>
+              )}
+
+              <Field label="Onde (opcional)" htmlFor="local" state={stateOf('local')}>
+                <Input id="local" maxLength={120} value={form.local} onChange={(e) => set('local')(e.target.value)} />
+              </Field>
+              <Field label="Com quem (separe por vírgula)" htmlFor="participantes" state={stateOf('participantes')}>
+                <Input id="participantes" value={form.participantes} onChange={(e) => set('participantes')(e.target.value)}
+                  placeholder="Ana, Bruno" />
+              </Field>
+              <Field label="Notas (opcional)" htmlFor="notas" state={stateOf('notas')}>
+                <textarea id="notas" maxLength={1000} rows={3} value={form.notas} onChange={(e) => set('notas')(e.target.value)}
+                  placeholder="o que levar, o que combinar…"
+                  className="w-full resize-none rounded-md border border-input bg-transparent px-3 py-2 text-sm outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50" />
+              </Field>
+
+              {error && <p role="alert" className="font-hand text-[1.25rem] leading-tight text-primary">{error}</p>}
+
+              <div className="flex items-center justify-end gap-4">
+                <button type="button" onClick={() => onOpenChange(false)} className="font-mono text-[11px] tracking-wide text-pencil uppercase">
+                  cancelar
+                </button>
+                <Button ref={submitRef} type="submit" variant="ghost" disabled={saving}
+                  className={cn(STAMP_BUTTON, '-rotate-1 px-4 py-2 text-[12px]')}>
+                  {saving ? 'Anotando…' : 'Anotar na agenda'}
+                </Button>
+              </div>
+            </form>
           </div>
-        </form>
+        </div>
       </DialogContent>
     </Dialog>
   )

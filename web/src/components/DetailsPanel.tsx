@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
-import { periodLabel, QUERY_TYPE_LABEL } from '../format'
-import type { Answer } from '../types'
+import { draftWhen, periodLabel, QUERY_TYPE_LABEL } from '../format'
+import type { Answer, NoteAction } from '../types'
 
 interface Props {
   answer: Answer | null
@@ -22,6 +22,14 @@ export function DetailsPanel({ answer, onShowEvent }: Props) {
 
   const { detalhes: d } = answer
   const cited = new Set(answer.fontes.map((f) => f.id))
+  const cost = (
+    <p className="font-mono text-[11px] tracking-wide text-pencil uppercase">
+      {d.chamadas} chamada{d.chamadas === 1 ? '' : 's'} ao modelo · {d.tokens.toLocaleString('pt-BR')} tokens ·{' '}
+      {d.segundos.toFixed(1).replace('.', ',')} s
+    </p>
+  )
+
+  if (answer.acao) return <NoteDetails action={answer.acao} cost={cost} />
 
   return (
     <div className="h-full overflow-y-auto px-6 py-[var(--line)] text-[15px] leading-[var(--line)]">
@@ -69,10 +77,48 @@ export function DetailsPanel({ answer, onShowEvent }: Props) {
             : 'Nenhum compromisso sustentava uma resposta, então nada foi afirmado.'}
         </p>
         {d.guarda && <Note>↳ guarda acionada: {d.guarda}.</Note>}
-        <p className="font-mono text-[11px] tracking-wide text-pencil uppercase">
-          {d.chamadas} chamada{d.chamadas === 1 ? '' : 's'} ao modelo · {d.tokens.toLocaleString('pt-BR')} tokens ·{' '}
-          {d.segundos.toFixed(1).replace('.', ',')} s
-        </p>
+        {cost}
+      </Step>
+    </div>
+  )
+}
+
+const DECISION: Record<NoteAction['tipo'], string> = {
+  anotado:
+    'A mensagem pedia com todas as letras (marca, anota, agenda, me lembra…) e trazia dia e horário, então anotei na hora e deixei o "desfazer" no bilhete.',
+  confirmar:
+    'A mensagem descrevia um compromisso, mas não pedia para anotar com todas as letras. Na dúvida, nada foi salvo: o bilhete pergunta antes.',
+  completar: 'Faltou o dia ou o horário, que a agenda exige. Nada foi salvo: o formulário abre preenchido para completar.',
+}
+
+/** The same three notes for a message that asked to write something down instead of a question. */
+function NoteDetails({ action, cost }: { action: NoteAction; cost: ReactNode }) {
+  const r = action.rascunho
+  return (
+    <div className="h-full overflow-y-auto px-6 py-[var(--line)] text-[15px] leading-[var(--line)]">
+      <Step number="1" title="Como a mensagem foi entendida">
+        <p>{QUERY_TYPE_LABEL.anotar}: não é uma pergunta, então não houve busca na agenda.</p>
+      </Step>
+
+      <Step number="2" title="O que o modelo leu da mensagem">
+        <dl className="grid grid-cols-[6rem_1fr]">
+          <Term>o quê</Term>
+          <dd>{r.titulo}</dd>
+          <Term>quando</Term>
+          <dd>{draftWhen(r)}</dd>
+          <Term>onde</Term>
+          <dd>{r.local || '—'}</dd>
+          <Term>com quem</Term>
+          <dd>{r.participantes.join(', ') || '—'}</dd>
+          <Term>notas</Term>
+          <dd>{r.notas || '—'}</dd>
+        </dl>
+        <Note>↳ local, pessoas e notas só ficam se as palavras estiverem na sua mensagem.</Note>
+      </Step>
+
+      <Step number="3" title="O que foi feito">
+        <p>{DECISION[action.tipo]}</p>
+        {cost}
       </Step>
     </div>
   )

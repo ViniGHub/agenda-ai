@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> None:
         except LLMError as error:
             sys.exit(str(error))
         now = args.agora.replace(tzinfo=TZ) if args.agora and args.agora.tzinfo is None else args.agora
-        result = Assistant(store.SqliteEventStore(store.connect(args.db)), E5Embedder(), model).ask(args.pergunta, now)
+        result = Assistant(store.SqliteEventStore(store.connect(args.db)), E5Embedder(), model).ask(args.pergunta, now, mode="pergunta")  # the CLI only reads
         print(result.answer.text)
         if result.answer.cited:
             print("\nFontes:")

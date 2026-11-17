@@ -1,8 +1,11 @@
 """Cadastro por texto: one free sentence -> the fields of the event form. Nothing is saved here.
 
-"dentista quinta às 15h na clínica Sorriso" becomes titulo, data, inicio and local. The person
-reviews the filled-in form and saves it through the normal route (editing.EventDraft), so the
-model never writes to the agenda.
+"dentista quinta às 15h na clínica Sorriso" becomes titulo, data, inicio and local. Two callers:
+- the form's sentence box: the person reviews the filled-in form and saves it;
+- the chat: an explicit order with day and time ("marca dentista quinta às 15h") is saved at once,
+  with an undo; anything less clear is shown back as a question, and a missing day or time sends
+  the person to the form. See api.py.
+Either way the save goes through editing.EventDraft, the same validation as the form.
 
 The model's JSON is untrusted. Each field is checked on its own and a bad one is dropped, so the
 form asks for it again instead of the whole sentence failing. Nothing is guessed in code either:
@@ -26,6 +29,22 @@ from .understanding import date_reference
 
 MAX_DAYS_AWAY = 730  # the same window the form accepts (editing.EventDraft)
 _CLOCK = re.compile(r"(\d{1,2}):(\d{2})(?::\d{2})?")
+
+# Verbs that make a chat message an explicit order to write something down ("marca dentista
+# quinta às 15h", "me lembra de ligar para a Ana"). Only these are saved straight from the chat;
+# a message that merely describes an appointment ("dentista quinta às 15h") gets a question first.
+_REQUEST = re.compile(
+    r"\b(marca|marque|marcar|anota|anote|anotar|agenda|agende|agendar|adiciona|adicione|adicionar"
+    r"|coloca|coloque|colocar|bota|bote|botar|põe|poe|ponha|cria|crie|criar|lembra|lembre|lembrar"
+    r"|salva|salve|salvar|registra|registre|registrar)\b",
+    re.IGNORECASE,
+)
+_MISSING_NAMES = {"data": "o dia", "inicio": "o horário"}
+
+
+def explicit_request(message: str) -> bool:
+    """True when the message orders the note. Decided in code, so the model alone never saves anything."""
+    return _REQUEST.search(message) is not None
 
 
 class NoEventError(ValueError):
@@ -52,6 +71,10 @@ class Suggestion:
         if not self.dia_inteiro and self.inicio is None:
             missing.append("inicio")
         return missing
+
+    def missing_text(self) -> str:
+        """"o dia e o horário", for messages."""
+        return " e ".join(_MISSING_NAMES[name] for name in self.missing)
 
 
 def build_prompt(now: datetime) -> str:

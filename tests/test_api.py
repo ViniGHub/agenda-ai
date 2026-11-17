@@ -132,3 +132,67 @@ def test_sentences_and_questions_share_the_model_quota(sample_db, fake_embedder)
             client.post("/api/demo/interpretar", json={"frase": "dentista quinta 15h"}, headers=HEADERS).status_code,
         ]
     assert codes == [200, 200, 429]
+
+
+NOTE = {"tipo": "anotar", "de": None, "ate": None, "busca": None}
+
+
+def _ask(client, message, **extra):
+    return client.post("/api/demo/perguntar", json={"pergunta": message, **extra}, headers=HEADERS)
+
+
+def test_explicit_order_in_the_chat_is_saved_with_the_event(sample_db, fake_embedder):
+    with _client(sample_db, fake_embedder, FakeModel(NOTE, DENTIST)) as client:
+        before = client.get("/api/demo/status").json()["eventos"]
+        response = _ask(client, "marca dentista quinta 15h com a Ana na clínica Sorriso")
+        body = response.json()
+        assert body["acao"]["tipo"] == "anotado" and body["acao"]["evento"]["origem"] == "cadastro"
+        assert body["resposta"].startswith("Anotei na agenda: Dentista,") and "Clínica Sorriso" in body["resposta"]
+        assert body["detalhes"]["tipo"] == "anotar" and body["detalhes"]["chamadas"] == 2
+        assert "agenda_demo" in response.cookies  # saved in the visitor's own copy of the demo
+        assert client.get("/api/demo/status").json()["eventos"] == before + 1
+        undo = client.delete(f"/api/demo/compromissos/{body['acao']['evento']['id']}", headers=HEADERS)
+        assert undo.status_code == 200
+        assert client.get("/api/demo/status").json()["eventos"] == before
+
+
+def test_message_that_only_describes_an_appointment_asks_first(sample_db, fake_embedder):
+    with _client(sample_db, fake_embedder, FakeModel(NOTE, DENTIST)) as client:
+        before = client.get("/api/demo/status").json()["eventos"]
+        body = _ask(client, "dentista quinta 15h com a Ana na clínica Sorriso").json()
+        assert body["acao"]["tipo"] == "confirmar" and body["acao"]["evento"] is None
+        assert body["acao"]["rascunho"]["titulo"] == "Dentista" and body["resposta"].startswith("Quer que eu anote")
+        assert client.get("/api/demo/status").json()["eventos"] == before
+
+
+def test_missing_day_or_time_sends_to_the_form(sample_db, fake_embedder):
+    reply = {"titulo": "Reunião com a padaria", "data": None, "inicio": None}
+    with _client(sample_db, fake_embedder, FakeModel(NOTE, reply)) as client:
+        body = _ask(client, "marca reunião com a padaria semana que vem").json()
+    assert body["acao"]["tipo"] == "completar" and body["acao"]["rascunho"]["faltando"] == ["data", "inicio"]
+    assert body["resposta"] == 'Para anotar "Reunião com a padaria", falta o dia e o horário.'
+
+
+def test_that_was_a_question_skips_the_note(sample_db, fake_embedder):
+    model = FakeModel(NOTE, {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
+    with _client(sample_db, fake_embedder, model) as client:
+        body = _ask(client, "dentista quinta 15h", modo="pergunta").json()
+    assert body["acao"] is None and body["resposta"] == "Terça às 8h." and body["detalhes"]["tipo"] == "buscar"
+
+
+def test_questions_carry_no_action(sample_db, fake_embedder):
+    model = FakeModel({"tipo": "buscar", "de": None, "ate": None, "busca": "dentista"},
+                      {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
+    with _client(sample_db, fake_embedder, model) as client:
+        response = _ask(client, "quando é o dentista?")
+    assert response.json()["acao"] is None and "agenda_demo" not in response.cookies
+
+
+def test_write_it_down_button_reads_the_message_and_asks_first(sample_db, fake_embedder):
+    model = FakeModel(DENTIST)  # one call: no need to ask the model what the message is
+    with _client(sample_db, fake_embedder, model) as client:
+        before = client.get("/api/demo/status").json()["eventos"]
+        body = _ask(client, "marca dentista quinta 15h com a Ana na clínica Sorriso", modo="anotar").json()
+        assert body["acao"]["tipo"] == "confirmar"  # even with "marca": the person has not seen the fields yet
+        assert body["detalhes"]["chamadas"] == 1
+        assert client.get("/api/demo/status").json()["eventos"] == before

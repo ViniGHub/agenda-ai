@@ -11,6 +11,11 @@ Two workspaces share the same question pipeline:
 Both have .../interpretar: one sentence in, the event form filled in out. It saves nothing; the
 person checks the form and sends it to .../compromissos like any other new event.
 
+The chat (.../perguntar) also takes new appointments. An explicit order with a day and a time
+("marca dentista quinta às 15h") is saved at once and the reply offers an undo; a message that only
+describes an appointment ("dentista quinta às 15h") comes back as a question; a missing day or
+time comes back as a form to complete. AnswerOut.acao says which one happened.
+
 Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into an in-memory private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
@@ -28,18 +33,18 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time  # the module name "time" is taken by the clock below
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Literal
 
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from .assistant import Assistant
 from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, SESSION_SECONDS, AuthError, AuthSettings, User
 from .calendar_loader import format_when, load_events
 from .config import ROOT, TZ
-from .drafting import NoEventError, draft_from_text
+from .drafting import NoEventError, Suggestion, draft_from_text, explicit_request
 from .editing import MAX_IMPORT_CHARS, EventDraft, ImportError_, import_events
 from .llm import LLMError, UnavailableModel
 from .store import CREATED, IMPORTED, SqliteEventStore, StoredEvent
@@ -81,15 +86,41 @@ class DetailsOut(BaseModel):
     segundos: float
 
 
+class DraftOut(BaseModel):
+    """The event form, filled in from a message. Mirrors editing.EventDraft, with gaps allowed."""
+
+    titulo: str
+    data: date | None
+    dia_inteiro: bool
+    inicio: str | None  # HH:MM
+    fim: str | None
+    local: str
+    participantes: list[str]
+    notas: str
+    faltando: list[str] = Field(description="campos que a frase não trouxe e o formulário exige: data, inicio")
+
+
+class ActionOut(BaseModel):
+    """What the chat did with a message that asked to write down a new appointment."""
+
+    tipo: Literal["anotado", "confirmar", "completar"]  # saved (undo offered) / asks first / form needed
+    rascunho: DraftOut
+    evento: EventOut | None = None  # the saved event, when "anotado"
+
+
 class AnswerOut(BaseModel):
     resposta: str
     encontrou: bool
     fontes: list[EventOut]
     detalhes: DetailsOut
+    acao: ActionOut | None = None
 
 
 class QuestionIn(BaseModel):
     pergunta: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
+    # "auto": the model tells questions from new appointments; "pergunta": the person said it was a
+    # question; "anotar": the person asked to write it down (then it is never saved without a look).
+    modo: Literal["auto", "pergunta", "anotar"] = "auto"
 
 
 class StatusOut(BaseModel):
@@ -122,18 +153,9 @@ class SentenceIn(BaseModel):
     frase: str = Field(min_length=1, max_length=MAX_QUESTION_CHARS)
 
 
-class SuggestionOut(BaseModel):
+class SuggestionOut(DraftOut):
     """The form, filled in from one sentence. Nothing was saved: the person reviews it and sends the form."""
 
-    titulo: str
-    data: date | None
-    dia_inteiro: bool
-    inicio: str | None  # HH:MM
-    fim: str | None
-    local: str
-    participantes: list[str]
-    notas: str
-    faltando: list[str] = Field(description="campos que a frase não trouxe e o formulário exige: data, inicio")
     tokens: int
 
 
@@ -148,6 +170,21 @@ class ImportOut(BaseModel):
 
 def _clock(value: dt_time | None) -> str | None:
     return value.strftime("%H:%M") if value else None
+
+
+def draft_out(s: Suggestion) -> DraftOut:
+    return DraftOut(
+        titulo=s.titulo, data=s.data, dia_inteiro=s.dia_inteiro, inicio=_clock(s.inicio), fim=_clock(s.fim),
+        local=s.local, participantes=s.participantes, notas=s.notas, faltando=s.missing,
+    )
+
+
+def event_draft(s: Suggestion) -> EventDraft:
+    """Raises ValidationError if the suggestion does not pass the form's own rules."""
+    return EventDraft(
+        titulo=s.titulo, data=s.data, dia_inteiro=s.dia_inteiro, inicio=s.inicio, fim=s.fim,
+        local=s.local, participantes=s.participantes, notas=s.notas,
+    )
 
 
 def event_out(stored: StoredEvent) -> EventOut:
@@ -337,13 +374,20 @@ def create_app(
         with s.lock:
             return [event_out(e) for e in ws.store.events_between(None, None, limit=100_000)]
 
-    def answer_in(s: AppState, ws: Workspace, body: QuestionIn, request: Request) -> AnswerOut:
+    def answer_in(s: AppState, ws: Workspace, body: QuestionIn, request: Request,
+                  saving_workspace: Callable[[], Workspace]) -> AnswerOut:
+        """saving_workspace: where a new appointment goes (the demo makes the visitor's copy only then)."""
         if not limiter.allow(client_id(request)):
             raise HTTPException(429, "Limite de perguntas atingido. Tente de novo em alguns minutos.")
+        question = body.pergunta.strip()
         with s.lock:  # one question at a time: shared SQLite connections and a per-minute token quota
-            r = ws.assistant.ask(body.pergunta.strip())
+            r = ws.assistant.ask(question, mode=body.modo)
+        text, action = r.answer.text, None
+        if r.suggestion is not None:
+            text, action = note_from_chat(s, r.suggestion, question, request, saving_workspace,
+                                          may_save=body.modo == "auto")
         return AnswerOut(
-            resposta=r.answer.text,
+            resposta=text,
             encontrou=r.answer.found,
             fontes=[event_out(e) for e in r.answer.cited],
             detalhes=DetailsOut(
@@ -351,7 +395,27 @@ def create_app(
                 estrategia=r.strategy, recuperados=[event_out(e) for e in r.retrieved], guarda=r.answer.note,
                 tokens=r.usage.total, chamadas=r.usage.calls, segundos=round(r.seconds, 2),
             ),
+            acao=action,
         )
+
+    def note_from_chat(s: AppState, suggestion: Suggestion, message: str, request: Request,
+                       saving_workspace: Callable[[], Workspace], may_save: bool) -> tuple[str, ActionOut]:
+        draft = draft_out(suggestion)
+        if suggestion.missing:
+            return (f"Para anotar \"{suggestion.titulo}\", falta {suggestion.missing_text()}.",
+                    ActionOut(tipo="completar", rascunho=draft))
+        try:
+            event = event_draft(suggestion)
+        except ValidationError:
+            return (f"Para anotar \"{suggestion.titulo}\", confira os campos no formulário.",
+                    ActionOut(tipo="completar", rascunho=draft))
+        # Saved straight away only when the person clearly ordered it, and within the write limit.
+        if may_save and explicit_request(message) and write_limiter.allow(client_id(request)):
+            saved = add_to(s, saving_workspace(), event)
+            where = f" ({saved.local})" if saved.local else ""
+            return (f"Anotei na agenda: {saved.titulo}, {saved.quando}{where}.",
+                    ActionOut(tipo="anotado", rascunho=draft, evento=saved))
+        return (f"Quer que eu anote \"{suggestion.titulo}\" na agenda?", ActionOut(tipo="confirmar", rascunho=draft))
 
     def interpret_in(s: AppState, ws: Workspace, body: SentenceIn, request: Request) -> SuggestionOut:
         if s.llm_model is None:
@@ -368,12 +432,7 @@ def create_app(
             except LLMError:
                 raise HTTPException(502, "Não consegui ler a frase agora. Preencha o formulário ou tente de novo.")
             tokens = model.usage.total - before
-        return SuggestionOut(
-            titulo=suggestion.titulo, data=suggestion.data, dia_inteiro=suggestion.dia_inteiro,
-            inicio=_clock(suggestion.inicio), fim=_clock(suggestion.fim), local=suggestion.local,
-            participantes=suggestion.participantes, notas=suggestion.notas, faltando=suggestion.missing,
-            tokens=tokens,
-        )
+        return SuggestionOut(**draft_out(suggestion).model_dump(), tokens=tokens)
 
     def add_to(s: AppState, ws: Workspace, draft: EventDraft) -> EventOut:
         event = draft.to_event()
@@ -442,8 +501,9 @@ def create_app(
         return agenda_of(state(request), demo_workspace(request))
 
     @app.post("/api/demo/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
-    def demo_ask(body: QuestionIn, request: Request) -> AnswerOut:
-        return answer_in(state(request), demo_workspace(request), body, request)
+    def demo_ask(body: QuestionIn, request: Request, response: Response) -> AnswerOut:
+        return answer_in(state(request), demo_workspace(request), body, request,
+                         lambda: demo_workspace(request, response, create=True))
 
     @app.post("/api/demo/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
     def demo_interpret(body: SentenceIn, request: Request) -> SuggestionOut:
@@ -475,7 +535,8 @@ def create_app(
 
     @app.post("/api/minha/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
     def own_ask(body: QuestionIn, request: Request, user: User = Depends(require_user)) -> AnswerOut:
-        return answer_in(state(request), private_workspace(request, user), body, request)
+        ws = private_workspace(request, user)
+        return answer_in(state(request), ws, body, request, lambda: ws)
 
     @app.post("/api/minha/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
     def own_interpret(body: SentenceIn, request: Request, user: User = Depends(require_user)) -> SuggestionOut:

@@ -3,17 +3,18 @@ import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
-import { ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs } from './api'
+import { addDraft, ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs } from './api'
 import { AgendaPanel } from './components/AgendaPanel'
-import { Chat, type ChatMessage } from './components/Chat'
+import { Chat, type ChatMessage, type NoteHandlers } from './components/Chat'
 import { DetailsPanel } from './components/DetailsPanel'
 import { EventForm } from './components/EventForm'
-import type { AgendaEvent, Me, Space, Status } from './types'
+import type { AgendaEvent, AskMode, Draft, Me, Space, Status } from './types'
 
 type Tab = 'detalhes' | 'agenda'
 
 const DEMO_IDEAS = [
   'O que tenho amanhã?',
+  'Marca almoço com a Ana sexta ao meio-dia',
   'Quando é o dentista?',
   'Quantas aulas de inglês tenho esta semana?',
   'O que preciso levar no veterinário?',
@@ -42,6 +43,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [tab, setTab] = useState<Tab>('detalhes')
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
+  const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
   const [notice, setNotice] = useState<string | null>(null)
   const nextId = useRef(1)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -63,17 +65,19 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
 
   useEffect(load, [space])
 
-  async function send(question: string) {
+  /** echo: false when the same message is sent again with another mode (no repeated line on the page). */
+  async function send(question: string, mode: AskMode = 'auto', echo = true) {
     const text = question.trim()
     if (!text || pending) return
-    setMessages((m) => [...m, { id: nextId.current++, role: 'user', text }])
+    if (echo) setMessages((m) => [...m, { id: nextId.current++, role: 'user', text }])
     setPending(true)
     try {
-      const answer = await askQuestion(space, text)
+      const answer = await askQuestion(space, text, mode)
       const id = nextId.current++
-      setMessages((m) => [...m, { id, role: 'assistant', answer }])
+      setMessages((m) => [...m, { id, role: 'assistant', answer, mode }])
       setSelectedId(id)
       setTab('detalhes')
+      if (answer.acao?.tipo === 'anotado') load() // already in the agenda: refresh the count and the list
     } catch (error) {
       setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: handleError(error) }])
     } finally {
@@ -88,8 +92,79 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
 
   function onSaved(event: AgendaEvent) {
     setNotice(`"${event.titulo}" anotado: ${event.quando}.`)
+    if (formSeed) markNote(formSeed.messageId, 'anotado', event)
     load()
     showEvent(event.id)
+  }
+
+  function openForm(seed: { draft: Draft; messageId: number } | null) {
+    setFormSeed(seed)
+    setFormOpen(true)
+  }
+
+  // ----- the sticky note under a chat reply ("marca dentista quinta às 15h") -----
+
+  function markNote(messageId: number, note: NonNullable<Extract<ChatMessage, { role: 'assistant' }>['note']>, saved?: AgendaEvent | null) {
+    setMessages((all) =>
+      all.map((m) => (m.id === messageId && m.role === 'assistant' ? { ...m, note, ...(saved !== undefined && { saved }) } : m)),
+    )
+  }
+
+  function noteOf(messageId: number) {
+    const message = messages.find((m) => m.id === messageId)
+    return message?.role === 'assistant' && message.answer.acao ? { message, action: message.answer.acao } : null
+  }
+
+  const notes: NoteHandlers = {
+    async confirm(messageId) {
+      const found = noteOf(messageId)
+      if (!found) return
+      try {
+        const saved = await addDraft(space, found.action.rascunho)
+        markNote(messageId, 'anotado', saved)
+        load()
+      } catch (error) {
+        throw new Error(handleError(error))
+      }
+    },
+    async undo(messageId) {
+      const found = noteOf(messageId)
+      const saved = found && (found.message.saved ?? found.action.evento)
+      if (!saved) return
+      try {
+        await deleteEvent(space, saved.id)
+        markNote(messageId, 'desfeito', null)
+        load()
+      } catch (error) {
+        throw new Error(handleError(error))
+      }
+    },
+    edit(messageId) {
+      const found = noteOf(messageId)
+      if (found) openForm({ draft: found.action.rascunho, messageId })
+    },
+    dismiss(messageId) {
+      markNote(messageId, 'cancelado')
+    },
+    askInstead(messageId) {
+      const text = messageBefore(messageId)
+      if (!text) return
+      markNote(messageId, 'pergunta')
+      void send(text, 'pergunta', false)
+    },
+    writeDown(messageId) {
+      const text = messageBefore(messageId)
+      if (!text) return
+      setMessages((all) => all.map((m) => (m.id === messageId && m.role === 'assistant' ? { ...m, offerUsed: true } : m)))
+      void send(text, 'anotar', false)
+    },
+  }
+
+  /** The person's message right before a reply. */
+  function messageBefore(messageId: number): string | null {
+    const index = messages.findIndex((m) => m.id === messageId)
+    const message = messages.slice(0, index).reverse().find((m) => m.role === 'user')
+    return message?.role === 'user' ? message.text : null
   }
 
   async function remove(event: AgendaEvent) {
@@ -140,7 +215,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             )}
           </h1>
           <p className="mt-2 max-w-xl text-muted-foreground">
-            Pergunte em português. Cada resposta diz de qual compromisso saiu.
+            Pergunte, ou peça para anotar. Cada resposta diz de qual compromisso saiu.
           </p>
         </div>
         <div className="flex flex-col items-start gap-2 sm:items-end">
@@ -165,7 +240,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             <Button
               variant="ghost"
               disabled={!status}
-              onClick={() => setFormOpen(true)}
+              onClick={() => openForm(null)}
               className={cn(STAMP_BUTTON, 'px-3 py-1.5 text-[11px]')}
             >
               + Novo compromisso
@@ -241,6 +316,8 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
               setTab('detalhes')
             }}
             onShowEvent={showEvent}
+            notes={notes}
+            canNote={status?.llm ?? false}
           />
         </div>
 
@@ -274,7 +351,8 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       </main>
 
       <Footer />
-      <EventForm open={formOpen} space={space} llm={status?.llm ?? false} onOpenChange={setFormOpen} onSaved={onSaved} />
+      <EventForm open={formOpen} space={space} llm={status?.llm ?? false} seed={formSeed?.draft ?? null}
+        onOpenChange={setFormOpen} onSaved={onSaved} />
     </div>
   )
 }

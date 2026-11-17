@@ -44,3 +44,11 @@ def test_model_failure_falls_back():
     query, note = understand(FakeModel(LLMError("429")), "quando é o dentista?", NOW)
     assert query.tipo == "buscar" and query.busca == "quando é o dentista?"
     assert note.startswith("LLMError")
+
+
+def test_new_appointment_is_its_own_type_without_filters():
+    model = FakeModel({"tipo": "anotar", "de": "2026-11-19", "ate": "2026-11-19", "busca": "dentista"})
+    query, note = understand(model, "marca dentista quinta às 15h", NOW)
+    assert note is None
+    assert query.tipo == "anotar" and query.de is None and query.ate is None and query.busca is None
+    assert '"anotar"' in model.sent[0][0]

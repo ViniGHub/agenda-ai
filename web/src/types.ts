@@ -3,6 +3,9 @@
 /** Which agenda a request talks to: the open demo or the signed-in person's own. */
 export type Space = 'demo' | 'minha'
 
+/** How a chat message is taken: the model decides, or the person said "that was a question" / "write it down". */
+export type AskMode = 'auto' | 'pergunta' | 'anotar'
+
 export interface AgendaEvent {
   id: number
   titulo: string
@@ -33,7 +36,7 @@ export interface ImportResult {
   importados: number
 }
 
-export type QueryType = 'listar' | 'buscar' | 'contar'
+export type QueryType = 'listar' | 'buscar' | 'contar' | 'anotar' // 'anotar': a new appointment, not a question
 
 export interface Details {
   tipo: QueryType
@@ -54,6 +57,19 @@ export interface Answer {
   encontrou: boolean
   fontes: AgendaEvent[]
   detalhes: Details
+  acao: NoteAction | null // set when the message asked to write down a new appointment
+}
+
+/**
+ * What the chat did with "marca dentista quinta às 15h":
+ * - anotado: an explicit order with day and time, already saved (the reply offers an undo);
+ * - confirmar: the message only described an appointment, so it asks before saving;
+ * - completar: the day or the time is missing, so the form has to be finished.
+ */
+export interface NoteAction {
+  tipo: 'anotado' | 'confirmar' | 'completar'
+  rascunho: Draft
+  evento: AgendaEvent | null // the saved event, when "anotado"
 }
 
 export interface Status {
@@ -78,8 +94,8 @@ export interface Me {
   email: string | null
 }
 
-/** The form filled in from one sentence ("dentista quinta às 15h"). Nothing is saved until the form is sent. */
-export interface Suggestion {
+/** The event form filled in from a message ("dentista quinta às 15h"), gaps allowed. */
+export interface Draft {
   titulo: string
   data: string | null // YYYY-MM-DD
   dia_inteiro: boolean
@@ -88,6 +104,10 @@ export interface Suggestion {
   local: string
   participantes: string[]
   notas: string
-  faltando: Array<'data' | 'inicio'> // required fields the sentence did not give
+  faltando: Array<'data' | 'inicio'> // required fields the message did not give
+}
+
+/** What the form's sentence box gets back. Nothing is saved until the form is sent. */
+export interface Suggestion extends Draft {
   tokens: number
 }

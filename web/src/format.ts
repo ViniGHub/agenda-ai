@@ -1,4 +1,4 @@
-import type { AgendaEvent, Details } from './types'
+import type { AgendaEvent, Details, Draft } from './types'
 
 const TIME_ZONE = 'America/Sao_Paulo'
 
@@ -34,4 +34,14 @@ export const QUERY_TYPE_LABEL: Record<Details['tipo'], string> = {
   listar: 'Listar um período',
   buscar: 'Buscar um compromisso',
   contar: 'Contar compromissos',
+  anotar: 'Anotar um compromisso',
+}
+
+const weekday = new Intl.DateTimeFormat('pt-BR', { timeZone: 'UTC', weekday: 'long' })
+
+/** A draft's day and time, with gaps: "quinta-feira, 19/11 · 15:00–16:00", "dia ? · 15:00". */
+export function draftWhen(d: Draft): string {
+  const day = d.data ? `${weekday.format(new Date(`${d.data}T12:00:00Z`))}, ${shortDate(d.data).slice(0, 5)}` : 'dia ?'
+  const time = d.dia_inteiro ? 'dia inteiro' : d.inicio ? (d.fim ? `${d.inicio}–${d.fim}` : d.inicio) : 'horário ?'
+  return `${day} · ${time}`
 }
