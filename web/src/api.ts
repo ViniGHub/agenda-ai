@@ -1,5 +1,5 @@
 // The only file that talks to the back-end.
-import type { AgendaEvent, Answer, Config, Me, Space, Status } from './types'
+import type { AgendaEvent, Answer, Config, EventDraft, ImportResult, Me, Space, Status } from './types'
 
 export class ApiError extends Error {
   constructor(
@@ -24,9 +24,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     const body = (await response.json().catch(() => null)) as { detail?: unknown } | null
-    throw new ApiError(typeof body?.detail === 'string' ? body.detail : `O servidor respondeu com erro ${response.status}.`, response.status)
+    throw new ApiError(errorMessage(body?.detail) ?? `O servidor respondeu com erro ${response.status}.`, response.status)
   }
   return (await response.json()) as T
+}
+
+/** FastAPI sends a string for our own errors and a list of field errors for validation (422). */
+function errorMessage(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: unknown }
+    if (typeof first?.msg === 'string') return first.msg.replace(/^Value error, /, '')
+  }
+  return null
 }
 
 const post = <T>(path: string, body: unknown = {}) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
@@ -39,3 +49,8 @@ export const logout = () => post<Me>('/api/logout')
 export const getStatus = (space: Space) => request<Status>(`/api/${space}/status`)
 export const getAgenda = (space: Space) => request<AgendaEvent[]>(`/api/${space}/agenda`)
 export const askQuestion = (space: Space, pergunta: string) => post<Answer>(`/api/${space}/perguntar`, { pergunta })
+
+export const addEvent = (space: Space, draft: EventDraft) => post<AgendaEvent>(`/api/${space}/compromissos`, draft)
+export const deleteEvent = (space: Space, id: number) =>
+  request<{ apagado: number }>(`/api/${space}/compromissos/${id}`, { method: 'DELETE' })
+export const importIcs = (conteudo: string) => post<ImportResult>('/api/minha/importar', { conteudo })

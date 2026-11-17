@@ -13,6 +13,24 @@ export interface AgendaEvent {
   local: string
   participantes: string[]
   notas: string
+  origem: 'base' | 'cadastro' | 'importado' // only "cadastro" and "importado" can be deleted
+}
+
+/** What the form sends; the server builds the São Paulo date and times. */
+export interface EventDraft {
+  titulo: string
+  data: string // YYYY-MM-DD
+  dia_inteiro: boolean
+  inicio: string | null // HH:MM
+  fim: string | null
+  local: string
+  participantes: string[]
+  notas: string
+}
+
+export interface ImportResult {
+  encontrados: number
+  importados: number
 }
 
 export type QueryType = 'listar' | 'buscar' | 'contar'
@@ -46,6 +64,7 @@ export interface Status {
   llm: boolean
   modelo: string | null
   agora: string
+  persistente: boolean // false: additions disappear on restart (private) or after 2 hours (demo)
 }
 
 export interface Config {

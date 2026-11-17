@@ -73,8 +73,11 @@ class PostgresDatabase:
         with psycopg.connect(url, autocommit=True) as conn:
             conn.execute(schema(dim))
         # Neon suspends idle databases: check each connection before use and drop idle ones early.
+        # prepare_threshold=None: no server-side prepared statements, which a pooled (PgBouncer)
+        # connection string may not keep between transactions.
         self.pool = ConnectionPool(
-            url, min_size=0, max_size=max_size, max_idle=60, kwargs={"autocommit": True},
+            url, min_size=0, max_size=max_size, max_idle=60,
+            kwargs={"autocommit": True, "prepare_threshold": None},
             check=ConnectionPool.check_connection, open=True,
         )
 

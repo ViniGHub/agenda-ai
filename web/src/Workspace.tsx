@@ -2,10 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { ApiError, askQuestion, getAgenda, getStatus } from './api'
+import { cn, STAMP_BUTTON } from '@/lib/utils'
+import { ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs } from './api'
 import { AgendaPanel } from './components/AgendaPanel'
 import { Chat, type ChatMessage } from './components/Chat'
 import { DetailsPanel } from './components/DetailsPanel'
+import { EventForm } from './components/EventForm'
 import type { AgendaEvent, Me, Space, Status } from './types'
 
 type Tab = 'detalhes' | 'agenda'
@@ -39,7 +41,10 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [tab, setTab] = useState<Tab>('detalhes')
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
   const nextId = useRef(1)
+  const fileRef = useRef<HTMLInputElement>(null)
 
   function handleError(error: unknown): string {
     if (error instanceof ApiError && error.status === 401) onSessionLost()
@@ -79,6 +84,38 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   function showEvent(eventId: number) {
     setFocusedEventId(eventId)
     setTab('agenda')
+  }
+
+  function onSaved(event: AgendaEvent) {
+    setNotice(`"${event.titulo}" anotado: ${event.quando}.`)
+    load()
+    showEvent(event.id)
+  }
+
+  async function remove(event: AgendaEvent) {
+    try {
+      await deleteEvent(space, event.id)
+      setNotice(`"${event.titulo}" apagado.`)
+      load()
+    } catch (error) {
+      setNotice(handleError(error))
+    }
+  }
+
+  async function importFile(file: File) {
+    setNotice('lendo o arquivo…')
+    try {
+      const result = await importIcs(await file.text())
+      const repeated = result.encontrados - result.importados
+      setNotice(
+        `${result.importados} compromisso${result.importados === 1 ? '' : 's'} importado${result.importados === 1 ? '' : 's'}` +
+          (repeated > 0 ? ` (${repeated} já estava${repeated === 1 ? '' : 'm'} na agenda).` : '.'),
+      )
+      load()
+      setTab('agenda')
+    } catch (error) {
+      setNotice(handleError(error))
+    }
   }
 
   const selected = messages.find((m) => m.id === selectedId)
@@ -121,10 +158,52 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
           ) : (
             <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-pencil sm:-rotate-1 sm:text-right">
               só você vê esta agenda.
+              {status && !status.persistente && ' por enquanto ela é temporária: some quando o servidor reinicia.'}
             </p>
           )}
+          <div className="flex items-center gap-4">
+            <Button
+              variant="ghost"
+              disabled={!status}
+              onClick={() => setFormOpen(true)}
+              className={cn(STAMP_BUTTON, 'px-3 py-1.5 text-[11px]')}
+            >
+              + Novo compromisso
+            </Button>
+            {!isDemo && (
+              <>
+                <InkLink
+                  disabled={!status}
+                  onClick={() => fileRef.current?.click()}
+                  className="font-mono text-[11px] tracking-wide text-pencil uppercase"
+                >
+                  importar .ics
+                </InkLink>
+                <input
+                  ref={fileRef}
+                  type="file"
+                  accept=".ics,text/calendar"
+                  hidden
+                  onChange={(event) => {
+                    const file = event.target.files?.[0]
+                    event.target.value = '' // lets the same file be chosen again
+                    if (file) void importFile(file)
+                  }}
+                />
+              </>
+            )}
+          </div>
         </div>
       </header>
+
+      {notice && (
+        <p role="status" className="-mt-2 font-hand text-[1.3rem] leading-tight text-primary">
+          {notice}{' '}
+          <button type="button" onClick={() => setNotice(null)} className="font-mono text-[11px] text-pencil" aria-label="Fechar aviso">
+            ×
+          </button>
+        </p>
+      )}
 
       {loadError && (
         <p role="alert" className="flex flex-wrap items-center gap-3 font-hand text-[1.35rem] text-primary">
@@ -151,7 +230,8 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             emptyNote={
               emptyOwn ? (
                 <p className="font-hand text-[1.4rem] leading-[var(--line)] text-primary">
-                  sua agenda ainda está vazia. na próxima versão: importar o .ics do Google Agenda e cadastrar compromissos.
+                  sua agenda ainda está vazia. importe o .ics do Google Agenda (configurações → importar e exportar) ou
+                  anote um compromisso.
                 </p>
               ) : null
             }
@@ -182,12 +262,19 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             <DetailsPanel answer={selectedAnswer} onShowEvent={showEvent} />
           </TabsContent>
           <TabsContent value="agenda" className="min-h-0 flex-1">
-            <AgendaPanel events={agenda} loaded={status !== null} citedIds={citedIds} focusedEventId={focusedEventId} />
+            <AgendaPanel
+              events={agenda}
+              loaded={status !== null}
+              citedIds={citedIds}
+              focusedEventId={focusedEventId}
+              onDelete={remove}
+            />
           </TabsContent>
         </Tabs>
       </main>
 
       <Footer />
+      <EventForm open={formOpen} space={space} onOpenChange={setFormOpen} onSaved={onSaved} />
     </div>
   )
 }

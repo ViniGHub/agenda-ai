@@ -98,13 +98,14 @@ O container escuta na porta que o Cloud Run informa na variável `$PORT` (8080).
 
 ### Secret Manager
 
-Três segredos, criados pelo script:
+Três segredos criados pelo script e um opcional:
 
 | Segredo | Variável no container | Conteúdo | Quem cria |
 |---|---|---|---|
 | `groq-api-key` | `GROQ_API_KEY` | chave da API do Groq | você digita (não aparece na tela) |
 | `agenda-ia-sessao` | `AGENDA_IA_SESSAO_SEGREDO` | chave que assina os cookies de login | o script gera aleatoriamente |
 | `agenda-ia-permitidos` | `AGENDA_IA_PERMITIDOS` | e-mails com acesso à área privada, separados por vírgula | você digita |
+| `agenda-ia-banco` (opcional) | `DATABASE_URL` | endereço de conexão do Postgres (Neon) | você cria (seção Neon); o script só o liga se existir |
 
 - Cada segredo tem **versões**. O Cloud Run usa a `latest`, lida **quando a instância liga**.
 - Para trocar um valor: grave uma versão nova (o segredo guarda o valor inteiro, então a lista de e-mails vai completa):
@@ -127,10 +128,33 @@ Três segredos, criados pelo script:
 |---|---|---|---|
 | você (dono) | Proprietário | tudo; dispara o deploy pelo Cloud Shell | |
 | `agenda-ia-build` | Cloud Run Builder (no projeto) | ler o código enviado, gravar a imagem, escrever o log do build | mexer em serviços, segredos, VMs |
-| `agenda-ia-run` | Secret Manager Secret Accessor (só nos 3 segredos) | ler esses 3 segredos | qualquer outra coisa no projeto |
+| `agenda-ia-run` | Secret Manager Secret Accessor (só nos segredos do app) | ler esses segredos | qualquer outra coisa no projeto |
 | `allUsers` | Cloud Run Invoker (no serviço) | chamar o site | |
 
-É o princípio do **menor privilégio**: se alguém invadisse o container, só conseguiria ler as três variáveis que o container já tem.
+É o princípio do **menor privilégio**: se alguém invadisse o container, só conseguiria ler as variáveis que o container já tem.
+
+### Neon (Postgres com pgvector, para a agenda privada)
+
+O container do Cloud Run perde a memória quando desliga, então a agenda privada precisa de um banco fora dele. O Neon é um Postgres "serverless" com plano gratuito (1 GB por projeto, desliga sozinho depois de 5 minutos parado e liga na próxima consulta) e com a extensão **pgvector**.
+
+- **Tabela:** uma só, `eventos`, criada pela própria API na primeira conexão ([`pgstore.py`](../src/agenda_ia/pgstore.py)). Cada linha tem o dono (ID da conta Google), os campos do compromisso, o vetor de 384 números (`vector(384)`) e uma coluna `tsvector` gerada para a busca por palavra.
+- **Índices:** `(dono, inicio)` para listar por data, GIN no `tsvector` e HNSW no vetor (distância de cosseno).
+- **Isolamento:** toda consulta tem `where dono = ...`, inclusive a exclusão.
+- **Sem o banco:** se o segredo `agenda-ia-banco` não existir, a agenda privada fica em memória e a tela avisa que é temporária.
+
+**Como ligar:**
+
+1. Crie a conta em neon.tech e um projeto. Escolha a região **AWS us-east-1** (a mais perto do Cloud Run em us-east1).
+2. Em **Connect**, copie o endereço de conexão (`postgresql://...neon.tech/neondb?sslmode=require`). Prefira o endereço com **pooling** (`-pooler` no nome do host).
+3. No Cloud Shell, guarde-o como segredo, sem que ele apareça na tela nem no histórico:
+
+   ```bash
+   read -rs URL && printf '%s' "$URL" | gcloud secrets create agenda-ia-banco --data-file=- && unset URL
+   ```
+
+4. Rode o deploy de novo (`bash deploy/cloud-run.sh`). O script detecta o segredo, dá à conta `agenda-ia-run` permissão de leitura e entrega a variável `DATABASE_URL` ao container.
+
+Para testar o SQL sem o Neon, [`scripts/testar-postgres.sh`](../scripts/testar-postgres.sh) sobe um Postgres com pgvector descartável no Docker e roda os testes de armazenamento.
 
 ### Google Auth Platform (login com Google)
 
@@ -163,7 +187,7 @@ Ou pelo console: Cloud Run → agenda-ia → Registros.
 | GitHub | código-fonte; o Cloud Shell faz `git pull` antes de cada deploy | deploy |
 | Hugging Face Hub | download do modelo `intfloat/multilingual-e5-small` | só no build (em produção o container não acessa) |
 | Groq | o LLM `openai/gpt-oss-120b`, plano gratuito (8.000 tokens/minuto) | cada pergunta |
-| Neon (próxima etapa) | Postgres com pgvector para guardar a agenda privada | — |
+| Neon | Postgres com pgvector para guardar a agenda privada (opcional) | cada operação na área privada |
 
 ---
 
@@ -264,7 +288,7 @@ gcloud iam service-accounts delete agenda-ia-run@$P.iam.gserviceaccount.com
 gcloud iam service-accounts delete agenda-ia-build@$P.iam.gserviceaccount.com
 ```
 
-E apague o ID do cliente OAuth em Credenciais.
+E apague o ID do cliente OAuth em Credenciais, o segredo `agenda-ia-banco` (se existir) e o projeto no Neon.
 
 ---
 
@@ -278,6 +302,7 @@ E apague o ID do cliente OAuth em Credenciais.
 | Secret Manager | 6 versões ativas e 10 mil acessos | 3 segredos |
 | Cloud Logging | 50 GiB de logs | muito abaixo |
 | Groq | plano gratuito (8.000 tokens/minuto) | ~2 mil tokens por pergunta |
+| Neon | 1 GB e 100 horas de processamento por projeto; passando do limite, bloqueia gravações em vez de cobrar | alguns MB por agenda |
 
 As cotas mudam com o tempo; confira a página de preços de cada serviço antes de replicar.
 

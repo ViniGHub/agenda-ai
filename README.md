@@ -4,7 +4,7 @@ Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o 
 
 **Demonstração:** https://agenda-ia-924443163141.us-east1.run.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
 
-> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM e interface web (React + FastAPI). Falta: avaliação automática.
+> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos e importação de `.ics`. Falta: avaliação automática e cadastro em linguagem natural.
 
 A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
 
@@ -37,10 +37,21 @@ pergunta
   3. responder (LLM): só com os compromissos numerados, citando os números → validação em código
 
 web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
-     /api/demo/...   agenda fictícia, aberta (status, agenda, perguntar)
-     /api/minha/...  agenda de quem entrou com o Google (mesmas rotas, exigem sessão)
+     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar, compromissos (criar/apagar)
+     /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
      /api/login · /api/logout · /api/me · /api/config
 ```
+
+## Armazenamento
+
+A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/agenda_ia/store.py)), que tem duas implementações:
+
+- **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa a um cookie anônimo e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
+- **Postgres com pgvector** ([`pgstore.py`](src/agenda_ia/pgstore.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
+
+Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser apagada), `cadastro` (anotado no formulário) ou `importado` (veio do `.ics`). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
+
+Os mesmos testes de contrato rodam nas duas implementações ([`tests/test_stores.py`](tests/test_stores.py)). Os do Postgres rodam quando `TEST_DATABASE_URL` aponta para um banco com pgvector; [`scripts/testar-postgres.sh`](scripts/testar-postgres.sh) sobe um descartável no Docker (no Cloud Shell, por exemplo) e roda tudo.
 
 ## Login e modo teste
 
@@ -50,7 +61,7 @@ A capa do site tem dois caminhos: **"Testar com a agenda fictícia"**, sem conta
 - Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 8 horas. O token do Google não é guardado.
 - Toda requisição `POST` precisa do cabeçalho `X-Requested-With: agenda-ia`. Um site de terceiros não consegue enviá-lo sem uma liberação de CORS que esta API nunca dá, o que barra ataques de CSRF.
 - A lista de permitidos e a chave que assina os cookies ficam no Secret Manager, nunca no repositório. Quem sai da lista perde o acesso mesmo com um cookie ainda válido.
-- Por enquanto a agenda privada fica em memória e começa vazia. A próxima etapa é guardá-la num banco (Postgres com pgvector no Neon), importar o `.ics` e cadastrar compromissos.
+- A agenda privada começa vazia: dá para importar o `.ics` exportado do Google Agenda ou anotar compromissos no formulário. Com o segredo do banco configurado, ela fica no Neon; sem ele, fica em memória e a tela avisa que é temporária.
 
 O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`api.py`](src/agenda_ia/api.py) e os tipos espelhados em [`web/src/types.ts`](web/src/types.ts). Em produção, o FastAPI serve o React já compilado, então é uma origem só (sem CORS) e a chave do Groq nunca chega ao navegador.
 
@@ -96,7 +107,8 @@ python -m agenda_ia buscar "padaria" --de 2026-11-23 --ate 2026-11-29
 # --agora finge a data atual, para a agenda de exemplo (que é da semana de 16/11/2026)
 python -m agenda_ia perguntar "o que tenho amanhã?" --agora 2026-11-16T12:00 -v
 
-pytest                                          # 50 testes, sem rede: o LLM, os embeddings e o Google são simulados
+pytest                                          # 71 testes, sem rede: o LLM, os embeddings e o Google são simulados
+bash scripts/testar-postgres.sh                 # + os testes do Postgres, num banco descartável (precisa de Docker)
 ```
 
 Interface web (requer Node 20 ou mais novo):
@@ -164,5 +176,6 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
 - [x] Publicação no Google Cloud Run
 - [x] Capa com modo teste (agenda fictícia) e login com Google para a área privada
-- [ ] Agenda privada num banco (Neon), importação de `.ics` e cadastro de compromissos
+- [x] Cadastro e exclusão de compromissos, importação de `.ics`, Postgres com pgvector para a agenda privada
+- [ ] Ligar o Neon em produção (falta criar a conta e o segredo `agenda-ia-banco`)
 - [ ] Cadastro em linguagem natural ("marca dentista quinta às 15h"), sempre com confirmação

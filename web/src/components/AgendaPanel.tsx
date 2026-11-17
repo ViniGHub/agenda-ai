@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { dayKey, dayLabel, timeLabel } from '../format'
 import type { AgendaEvent } from '../types'
@@ -8,12 +8,20 @@ interface Props {
   loaded: boolean
   citedIds: Set<number>
   focusedEventId: number | null
+  onDelete: (event: AgendaEvent) => void
+}
+
+const ORIGIN_NOTE: Record<AgendaEvent['origem'], string | null> = {
+  base: null,
+  cadastro: 'você anotou',
+  importado: 'importado',
 }
 
 /** The whole agenda, day by day, like a planner: the answer key to check what the assistant says. */
-export function AgendaPanel({ events, loaded, citedIds, focusedEventId }: Props) {
+export function AgendaPanel({ events, loaded, citedIds, focusedEventId, onDelete }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef(new Map<number, HTMLLIElement>())
+  const [confirming, setConfirming] = useState<number | null>(null) // event waiting for "apagar mesmo?"
   const todayKey = dayKey(new Date().toISOString())
 
   const days = useMemo(() => {
@@ -64,8 +72,35 @@ export function AgendaPanel({ events, loaded, citedIds, focusedEventId }: Props)
               >
                 <span className="font-mono text-[12px] leading-6 text-pencil tabular-nums">{timeLabel(event)}</span>
                 <div className="min-w-0 leading-6">
-                  <div className="font-medium">
-                    {citedIds.has(event.id) ? <mark className="marker bg-transparent text-inherit">{event.titulo}</mark> : event.titulo}
+                  <div className="flex flex-wrap items-baseline gap-x-2">
+                    <span className="font-medium">
+                      {citedIds.has(event.id) ? <mark className="marker bg-transparent text-inherit">{event.titulo}</mark> : event.titulo}
+                    </span>
+                    {ORIGIN_NOTE[event.origem] && (
+                      <span className="font-hand text-[1.05rem] leading-none text-primary">{ORIGIN_NOTE[event.origem]}</span>
+                    )}
+                    {event.origem !== 'base' &&
+                      (confirming === event.id ? (
+                        <span className="ml-auto font-mono text-[10px] tracking-wide uppercase">
+                          <span className="text-primary">apagar mesmo? </span>
+                          <button type="button" onClick={() => { setConfirming(null); onDelete(event) }} className="text-primary underline">
+                            sim
+                          </button>
+                          <span className="text-pencil"> · </span>
+                          <button type="button" onClick={() => setConfirming(null)} className="text-pencil underline">
+                            não
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setConfirming(event.id)}
+                          className="ml-auto font-mono text-[10px] tracking-wide text-pencil uppercase hover:text-primary hover:line-through"
+                          aria-label={`Apagar ${event.titulo}`}
+                        >
+                          apagar
+                        </button>
+                      ))}
                   </div>
                   {event.local && <div className="text-muted-foreground">{event.local}</div>}
                   {event.participantes.length > 0 && (
