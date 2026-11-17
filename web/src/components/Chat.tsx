@@ -35,6 +35,7 @@ interface Props {
   pending: boolean
   disabled: boolean
   selectedId: number | null
+  detailsOpen: boolean // the "Como foi respondido" tab is the one showing
   ideas: string[]
   canNote: boolean // a language model is configured, so messages can be read as appointments
   canRecord: boolean // voice messages: the server transcribes and this browser can record
@@ -49,7 +50,7 @@ interface Props {
 
 /** The left page of the notebook: questions in red handwriting, answers typed underneath. */
 export function Chat({
-  messages, pending, disabled, selectedId, ideas, canNote, canRecord, pendingText, emptyNote,
+  messages, pending, disabled, selectedId, detailsOpen, ideas, canNote, canRecord, pendingText, emptyNote,
   onSend, onSelect, onShowEvent, notes, onAudio,
 }: Props) {
   const [draft, setDraft] = useState('')
@@ -197,8 +198,8 @@ export function Chat({
                     <p className="font-mono text-[11px] leading-[var(--line)] text-pencil">
                       {answer.detalhes.segundos.toFixed(1).replace('.', ',')} s ·{' '}
                       {answer.detalhes.tokens.toLocaleString('pt-BR')} tokens ·{' '}
-                      <InkLink onClick={() => onSelect(message.id)} className={cn(selected && 'text-primary')}>
-                        {selected ? 'detalhado ao lado' : 'ver como foi respondido'}
+                      <InkLink onClick={() => onSelect(message.id)} className={cn(selected && detailsOpen && 'text-primary')}>
+                        {selected && detailsOpen ? 'detalhado ao lado' : 'ver como foi respondido'}
                       </InkLink>
                     </p>
                   </div>

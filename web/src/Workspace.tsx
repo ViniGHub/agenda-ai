@@ -42,13 +42,23 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [pending, setPending] = useState(false)
   const [pendingText, setPendingText] = useState('consultando a agenda')
   const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [tab, setTab] = useState<Tab>('detalhes')
+  // The right-hand page opens on the agenda. A new answer does not take the page over: it only
+  // marks the "Como foi respondido" tab (detailsNew counts the answers not seen there yet).
+  const [tab, setTabState] = useState<Tab>('agenda')
+  const [detailsNew, setDetailsNew] = useState(0)
+  const tabRef = useRef<Tab>('agenda') // the tab right now, for answers that arrive after an await
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
   const [notice, setNotice] = useState<string | null>(null)
   const nextId = useRef(1)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  function setTab(next: Tab) {
+    tabRef.current = next
+    setTabState(next)
+    if (next === 'detalhes') setDetailsNew(0)
+  }
 
   function handleError(error: unknown): string {
     if (error instanceof ApiError && error.status === 401) onSessionLost()
@@ -106,7 +116,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       const id = nextId.current++
       setMessages((m) => [...m, { id, role: 'assistant', answer, mode }])
       setSelectedId(id)
-      setTab('detalhes')
+      if (tabRef.current !== 'detalhes') setDetailsNew((n) => n + 1)
       if (answer.acao?.tipo === 'anotado') load() // already in the agenda: refresh the count and the list
     } catch (error) {
       setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: handleError(error) }])
@@ -329,6 +339,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             pending={pending}
             disabled={!status}
             selectedId={selectedId}
+            detailsOpen={tab === 'detalhes'}
             ideas={isDemo ? DEMO_IDEAS : emptyOwn ? [] : OWN_IDEAS}
             emptyNote={
               emptyOwn ? (
@@ -358,12 +369,19 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
           className="min-h-[32rem] gap-0 border-t border-border lg:min-h-0 lg:border-t-0 lg:border-l lg:shadow-[inset_22px_0_26px_-26px_rgb(0_0_0/0.35)]"
         >
           <TabsList variant="line" className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-card px-6 pt-3 pb-0">
-            <TabsTrigger value="detalhes" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
-              Como foi respondido
-            </TabsTrigger>
             <TabsTrigger value="agenda" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
               Agenda
               {status && <span className="font-mono text-[11px] text-pencil">{agenda.length}</span>}
+            </TabsTrigger>
+            <TabsTrigger value="detalhes" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
+              {/* key: each new answer remounts the label, so the highlighter swipes in again */}
+              <span key={detailsNew} className={cn(detailsNew > 0 && 'marker marker-soft')}>Como foi respondido</span>
+              {detailsNew > 0 && (
+                <>
+                  <span className="size-1.5 rounded-full bg-primary" aria-hidden />
+                  <span className="sr-only">(resposta nova)</span>
+                </>
+              )}
             </TabsTrigger>
           </TabsList>
           <TabsContent value="detalhes" className="paper-plain min-h-0 flex-1">

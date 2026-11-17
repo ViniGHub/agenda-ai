@@ -168,6 +168,12 @@
     animation: marker-swipe 0.55s cubic-bezier(0.3, 0.7, 0.2, 1) both;
   }
 
+  /* A lighter stroke, for "something new here" rather than "this is where the answer came from". */
+  .marker-soft {
+    --marker-soft: color-mix(in oklab, var(--marker) 45%, transparent);
+    background-image: linear-gradient(100deg, transparent 0.4em, var(--marker-soft) 0.55em, var(--marker-soft) calc(100% - 0.35em), transparent calc(100% - 0.2em));
+  }
+
   /* A rubber stamp: mono caps, double border, a little crooked. */
   .stamp {
     font-family: var(--font-mono);
