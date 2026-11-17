@@ -102,6 +102,33 @@ def test_only_added_events_can_be_deleted(client):
     assert client.delete(f"/api/demo/compromissos/{added['id']}", headers=HEADERS).status_code == 404
 
 
+def test_added_events_can_be_edited(client):
+    added = client.post("/api/demo/compromissos", json=_draft(titulo="Dentista"), headers=HEADERS).json()
+    changes = _draft(titulo="Oftalmologista", inicio="16:30", fim="17:00", local="Clínica Visão")
+    response = client.put(f"/api/demo/compromissos/{added['id']}", json=changes, headers=HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == added["id"] and body["origem"] == "cadastro"
+    assert body["titulo"] == "Oftalmologista" and body["local"] == "Clínica Visão" and "16:30–17:00" in body["quando"]
+    agenda = client.get("/api/demo/agenda").json()
+    assert [e["titulo"] for e in agenda if e["id"] == added["id"]] == ["Oftalmologista"]
+
+
+def test_base_events_and_bad_edits_are_refused(client):
+    added = client.post("/api/demo/compromissos", json=_draft(), headers=HEADERS).json()
+    base_event = next(e for e in client.get("/api/demo/agenda").json() if e["origem"] == "base")
+    assert client.put(f"/api/demo/compromissos/{base_event['id']}", json=_draft(), headers=HEADERS).status_code == 404
+    assert client.put("/api/demo/compromissos/999999", json=_draft(), headers=HEADERS).status_code == 404
+    assert client.put(f"/api/demo/compromissos/{added['id']}", json=_draft(fim="08:00"), headers=HEADERS).status_code == 422
+    assert client.put(f"/api/demo/compromissos/{added['id']}", json=_draft()).status_code == 403
+
+
+def test_shared_demo_cannot_be_edited_by_a_stranger(client):
+    added = client.post("/api/demo/compromissos", json=_draft(titulo="Meu"), headers=HEADERS).json()
+    stranger = TestClient(client.app, base_url="https://testserver")  # no cookie: sees the shared demo
+    assert stranger.put(f"/api/demo/compromissos/{added['id']}", json=_draft(), headers=HEADERS).status_code == 404
+
+
 def test_writes_need_the_custom_header_and_valid_data(client):
     assert client.post("/api/demo/compromissos", json=_draft()).status_code == 403
     assert client.post("/api/demo/compromissos", json=_draft(inicio=None), headers=HEADERS).status_code == 422
@@ -109,6 +136,7 @@ def test_writes_need_the_custom_header_and_valid_data(client):
 
 def test_private_add_and_import_need_login(client):
     assert client.post("/api/minha/compromissos", json=_draft(), headers=HEADERS).status_code == 401
+    assert client.put("/api/minha/compromissos/1", json=_draft(), headers=HEADERS).status_code == 401
     assert client.post("/api/minha/importar", json={"conteudo": "BEGIN:VCALENDAR"}, headers=HEADERS).status_code == 401
 
 

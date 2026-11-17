@@ -80,6 +80,46 @@ def test_delete_removes_from_every_index(make_store, fake_embedder):
     assert store.delete(stored.id) is False
 
 
+def test_update_rewrites_fields_and_every_index(make_store, fake_embedder):
+    store = make_store()
+    [stored] = _add(store, fake_embedder, [_event("Dentista", notes="levar a carteirinha")], IMPORTED)
+    later = WHEN + timedelta(days=3, hours=2)
+    edited = Event(uid="ignorado", title="Oftalmologista", start=later, end=later + timedelta(minutes=30),
+                   all_day=False, location="Clínica Visão", attendees=("Bruno",), description="levar os óculos")
+    updated = store.update(stored.id, edited, fake_embedder.passages([edited.search_text()])[0])
+    assert updated is not None and updated.id == stored.id and updated.origin == IMPORTED
+    assert updated.event.title == "Oftalmologista" and updated.event.start == later
+    assert updated.event.attendees == ("Bruno",) and updated.event.location == "Clínica Visão"
+    assert store.count() == 1
+    # the word and vector indexes follow the new text, and the date filter the new day
+    assert store.keyword_search("oftalmologista", 5, None, None) == [stored.id]
+    assert store.keyword_search("dentista", 5, None, None) == []
+    assert store.vector_search(fake_embedder.query("oftalmologista óculos"), 5, None, None)[0] == stored.id
+    old_day = int(datetime(2026, 11, 20, tzinfo=TZ).timestamp())
+    assert store.events_between(old_day, old_day + 86400) == []
+
+
+def test_edited_import_is_not_brought_back_by_a_new_import(make_store, fake_embedder):
+    store = make_store()
+    original = _event("Reunião")
+    [stored] = _add(store, fake_embedder, [original], IMPORTED)
+    moved = Event(uid=original.uid, title="Reunião (remarcada)", start=WHEN + timedelta(days=1),
+                  end=WHEN + timedelta(days=1, hours=1), all_day=False, location="", attendees=(), description="")
+    store.update(stored.id, moved, fake_embedder.passages([moved.search_text()])[0])
+    assert _add(store, fake_embedder, [original], IMPORTED) == []  # same .ics again: the edit stays
+    assert store.count() == 1
+
+
+def test_base_and_missing_events_cannot_be_updated(make_store, fake_embedder):
+    store = make_store()
+    [stored] = _add(store, fake_embedder, [_event("Daily")], BASE)
+    other = _event("Outra coisa")
+    vector = fake_embedder.passages([other.search_text()])[0]
+    assert store.update(stored.id, other, vector) is None
+    assert store.update(stored.id + 999, other, vector) is None
+    assert store.get_events([stored.id])[stored.id].event.title == "Daily"
+
+
 def test_base_events_cannot_be_deleted(make_store, fake_embedder):
     store = make_store()
     [stored] = _add(store, fake_embedder, [_event("Daily")], BASE)
@@ -95,6 +135,9 @@ def test_owners_are_isolated(make_store, fake_embedder, request):
     assert theirs.get_events([stored.id]) == {}
     assert theirs.keyword_search("consulta", 5, None, None) == []
     assert theirs.delete(stored.id) is False and mine.count() == 1
+    other = _event("Invasão")
+    assert theirs.update(stored.id, other, fake_embedder.passages([other.search_text()])[0]) is None
+    assert mine.get_events([stored.id])[stored.id].event.title == "Consulta"
 
 
 def test_sqlite_clone_is_independent(sample_db, fake_embedder):

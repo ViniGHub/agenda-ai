@@ -8,6 +8,7 @@ interface Props {
   loaded: boolean
   citedIds: Set<number>
   focusedEventId: number | null
+  onEdit: (event: AgendaEvent) => void
   onDelete: (event: AgendaEvent) => void
 }
 
@@ -18,7 +19,7 @@ const ORIGIN_NOTE: Record<AgendaEvent['origem'], string | null> = {
 }
 
 /** The whole agenda, day by day, like a planner: the answer key to check what the assistant says. */
-export function AgendaPanel({ events, loaded, citedIds, focusedEventId, onDelete }: Props) {
+export function AgendaPanel({ events, loaded, citedIds, focusedEventId, onEdit, onDelete }: Props) {
   const panelRef = useRef<HTMLDivElement>(null)
   const itemRefs = useRef(new Map<number, HTMLLIElement>())
   const [confirming, setConfirming] = useState<number | null>(null) // event waiting for "apagar mesmo?"
@@ -92,14 +93,16 @@ export function AgendaPanel({ events, loaded, citedIds, focusedEventId, onDelete
                           </button>
                         </span>
                       ) : (
-                        <button
-                          type="button"
-                          onClick={() => setConfirming(event.id)}
-                          className="ml-auto font-mono text-[10px] tracking-wide text-pencil uppercase hover:text-primary hover:line-through"
-                          aria-label={`Apagar ${event.titulo}`}
-                        >
-                          apagar
-                        </button>
+                        <span className="ml-auto flex gap-3 font-mono text-[10px] tracking-wide text-pencil uppercase">
+                          <button type="button" onClick={() => onEdit(event)} className="uppercase hover:text-primary hover:underline"
+                            aria-label={`Editar ${event.titulo}`}>
+                            editar
+                          </button>
+                          <button type="button" onClick={() => setConfirming(event.id)}
+                            className="uppercase hover:text-primary hover:line-through" aria-label={`Apagar ${event.titulo}`}>
+                            apagar
+                          </button>
+                        </span>
                       ))}
                   </div>
                   {event.local && <div className="text-muted-foreground">{event.local}</div>}

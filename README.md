@@ -50,7 +50,8 @@ mensagem de voz → gravada no navegador (com medidor de nível; silêncio nem �
   → o texto entra na conversa como se tivesse sido digitado, com a marca "por áudio"
 
 web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
-     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, transcrever, compromissos
+     /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, transcrever,
+                     compromissos (criar, editar, apagar)
      /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
      /api/login · /api/logout · /api/me · /api/config
 ```
@@ -62,7 +63,9 @@ A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/a
 - **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa ao cookie de sessão (anônimo, sem login) e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
 - **Postgres com pgvector** ([`pgstore.py`](src/agenda_ia/pgstore.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
 
-Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser apagada), `cadastro` (anotado no formulário) ou `importado` (veio do `.ics`). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
+Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser editada nem apagada), `cadastro` (anotado no formulário ou na conversa) ou `importado` (veio do `.ics`). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
+
+Editar (pela agenda, ou pelo bilhete do que a conversa acabou de anotar) troca os campos e recalcula o vetor e o índice de palavras, então as próximas perguntas já acham a versão nova. O compromisso mantém a identidade: um evento importado e depois editado não volta ao lado da versão editada quando o mesmo `.ics` é importado de novo. O formulário só representa um dia; ao editar algo que ocupa vários dias (uma viagem importada), a tela avisa que ele passará a ocupar só o dia escolhido.
 
 Os mesmos testes de contrato rodam nas duas implementações ([`tests/test_stores.py`](tests/test_stores.py)). Os do Postgres rodam quando `TEST_DATABASE_URL` aponta para um banco com pgvector; [`scripts/testar-postgres.sh`](scripts/testar-postgres.sh) sobe um descartável no Docker (no Cloud Shell, por exemplo) e roda tudo.
 
@@ -242,7 +245,7 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Interface web em React + API em FastAPI, com limite de perguntas por visitante
 - [x] Publicação no Google Cloud Run
 - [x] Capa com modo teste (agenda fictícia) e login com Google para a área privada
-- [x] Cadastro e exclusão de compromissos, importação de `.ics`, Postgres com pgvector para a agenda privada
+- [x] Cadastro, edição e exclusão de compromissos, importação de `.ics`, Postgres com pgvector para a agenda privada
 - [x] Neon ligado em produção: a agenda privada fica guardada no Postgres
 - [x] Cadastro por frase ("dentista quinta às 15h na clínica Sorriso"): o formulário abre preenchido e nada é salvo sem confirmação
 - [x] Anotar pela conversa: pedido explícito anota com desfazer; o que não estiver claro pergunta antes

@@ -50,6 +50,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
+  const [formEditing, setFormEditing] = useState<{ event: AgendaEvent; messageId: number | null } | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const nextId = useRef(1)
   const fileRef = useRef<HTMLInputElement>(null)
@@ -128,15 +129,23 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
     setTab('agenda')
   }
 
-  function onSaved(event: AgendaEvent) {
-    setNotice(`"${event.titulo}" anotado: ${event.quando}.`)
-    if (formSeed) markNote(formSeed.messageId, 'anotado', event)
+  function onSaved(event: AgendaEvent, edited: boolean) {
+    setNotice(`"${event.titulo}" ${edited ? 'atualizado' : 'anotado'}: ${event.quando}.`)
+    const messageId = edited ? formEditing?.messageId : formSeed?.messageId
+    if (messageId != null) markNote(messageId, 'anotado', event) // the chat note shows the new version
     load()
     showEvent(event.id)
   }
 
   function openForm(seed: { draft: Draft; messageId: number } | null) {
     setFormSeed(seed)
+    setFormEditing(null)
+    setFormOpen(true)
+  }
+
+  function openEdit(event: AgendaEvent, messageId: number | null = null) {
+    setFormSeed(null)
+    setFormEditing({ event, messageId })
     setFormOpen(true)
   }
 
@@ -180,6 +189,13 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
     edit(messageId) {
       const found = noteOf(messageId)
       if (found) openForm({ draft: found.action.rascunho, messageId })
+    },
+    editSaved(messageId) {
+      const found = noteOf(messageId)
+      const saved = found && (found.message.saved ?? found.action.evento)
+      if (!saved) return
+      // The agenda has the current version (it may have been edited already); fall back to the note's copy.
+      openEdit(agenda.find((e) => e.id === saved.id) ?? saved, messageId)
     },
     dismiss(messageId) {
       markNote(messageId, 'cancelado')
@@ -393,6 +409,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
               loaded={status !== null}
               citedIds={citedIds}
               focusedEventId={focusedEventId}
+              onEdit={(event) => openEdit(event)}
               onDelete={remove}
             />
           </TabsContent>
@@ -401,6 +418,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
 
       <Footer />
       <EventForm open={formOpen} space={space} llm={status?.llm ?? false} seed={formSeed?.draft ?? null}
+        editing={formEditing?.event ?? null}
         onOpenChange={setFormOpen} onSaved={onSaved} />
     </div>
   )

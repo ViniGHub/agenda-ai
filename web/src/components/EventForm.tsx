@@ -6,8 +6,8 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogHeader, Di
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
-import { addEvent, interpretSentence } from '../api'
-import type { AgendaEvent, Draft, Space } from '../types'
+import { addEvent, interpretSentence, updateEvent } from '../api'
+import type { AgendaEvent, Draft, EventDraft, Space } from '../types'
 import { DateField, TimeField } from './DateTimeFields'
 
 interface Props {
@@ -15,8 +15,9 @@ interface Props {
   space: Space
   llm: boolean // without a language model the sentence box is hidden and the form is filled by hand
   seed: Draft | null // opened from a chat note: start filled in with what the model read
+  editing: AgendaEvent | null // an event being edited: the form starts with its fields and saves over it
   onOpenChange: (open: boolean) => void
-  onSaved: (event: AgendaEvent) => void
+  onSaved: (event: AgendaEvent, edited: boolean) => void
 }
 
 const today = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo' }).format(new Date())
@@ -27,6 +28,27 @@ type FieldName = keyof FormState
 
 const MISSING_NAMES: Record<string, string> = { data: 'o dia', inicio: 'o horário' }
 
+/** The form's fields for an event as the API returns it (times already in São Paulo). */
+function fromEvent(e: AgendaEvent): FormState {
+  const sameDay = e.inicio.slice(0, 10) === e.fim.slice(0, 10)
+  return {
+    titulo: e.titulo,
+    data: e.inicio.slice(0, 10),
+    diaInteiro: e.dia_inteiro,
+    inicio: e.dia_inteiro ? '09:00' : e.inicio.slice(11, 16),
+    fim: e.dia_inteiro || !sameDay ? '' : e.fim.slice(11, 16),
+    local: e.local,
+    participantes: e.participantes.join(', '),
+    notas: e.notas,
+  }
+}
+
+/** Longer than one day (a trip, an event past midnight): the form only holds one day. */
+function spansDays(e: AgendaEvent): boolean {
+  const days = (Date.parse(e.fim) - Date.parse(e.inicio)) / 86_400_000
+  return e.dia_inteiro ? days > 1 : e.inicio.slice(0, 10) !== e.fim.slice(0, 10)
+}
+
 const EXAMPLES = ['dentista quinta às 15h na clínica Sorriso', 'almoço com a Ana amanhã ao meio-dia', 'aniversário da Bia dia 28']
 
 /**
@@ -35,7 +57,8 @@ const EXAMPLES = ['dentista quinta às 15h na clínica Sorriso', 'almoço com a 
  * until "Anotar na agenda".
  * The server validates everything again.
  */
-export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Props) {
+export function EventForm({ open, space, llm, seed, editing, onOpenChange, onSaved }: Props) {
+  const sentenceBox = llm && !editing // editing starts from the event itself, not from a sentence
   const [form, setForm] = useState<FormState>({ ...EMPTY, data: today() })
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -48,7 +71,7 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
 
   useEffect(() => {
     if (open) {
-      setForm({ ...EMPTY, data: today() })
+      setForm(editing ? fromEvent(editing) : { ...EMPTY, data: today() })
       setError(null)
       setSentence('')
       setSentenceNote(null)
@@ -132,7 +155,8 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
     }
     setSaving(true)
     try {
-      const saved = await addEvent(space, {
+      const save = editing ? (draft: EventDraft) => updateEvent(space, editing.id, draft) : (draft: EventDraft) => addEvent(space, draft)
+      const saved = await save({
         titulo: form.titulo,
         data: form.data,
         dia_inteiro: form.diaInteiro,
@@ -142,7 +166,7 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
         participantes: form.participantes.split(',').map((p) => p.trim()).filter(Boolean),
         notas: form.notas,
       })
-      onSaved(saved)
+      onSaved(saved, editing !== null)
       onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
@@ -156,10 +180,10 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
       {/* Two separate pieces of paper: the sentence on a sticky note beside the page, the form on the page. */}
       <DialogContent
         showCloseButton={false}
-        className={cn('max-h-[94dvh] overflow-y-auto bg-transparent p-1 shadow-none ring-0', llm ? 'sm:max-w-[54rem]' : 'sm:max-w-lg')}
+        className={cn('max-h-[94dvh] overflow-y-auto bg-transparent p-1 shadow-none ring-0', sentenceBox ? 'sm:max-w-[54rem]' : 'sm:max-w-lg')}
       >
-        <div className={cn('grid items-start gap-6', llm && 'md:grid-cols-[17.5rem_1fr]')}>
-          {llm && (
+        <div className={cn('grid items-start gap-6', sentenceBox && 'md:grid-cols-[17.5rem_1fr]')}>
+          {sentenceBox && (
             <aside
               aria-label="Escrever em uma frase"
               className="relative mx-2 mt-5 -rotate-1 rounded-[3px] bg-card bg-[linear-gradient(color-mix(in_oklab,var(--marker)_70%,transparent),color-mix(in_oklab,var(--marker)_70%,transparent))] px-4 pt-5 pb-3 shadow-[0_1px_0_rgb(0_0_0/0.08),0_14px_24px_-14px_rgb(0_0_0/0.45)] md:mx-0 md:mt-10 md:-rotate-2"
@@ -223,17 +247,26 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
               </Button>
             </DialogClose>
             <DialogHeader>
-              <DialogTitle className="font-heading text-2xl font-semibold tracking-tight">Novo compromisso</DialogTitle>
+              <DialogTitle className="font-heading text-2xl font-semibold tracking-tight">
+                {editing ? 'Editar compromisso' : 'Novo compromisso'}
+              </DialogTitle>
               <DialogDescription className="font-hand text-[1.2rem] text-pencil">
-                {space === 'demo'
-                  ? 'fica só para você, nesta agenda fictícia, por duas horas.'
-                  : 'entra na sua agenda e já pode ser perguntado.'}
+                {editing
+                  ? 'as próximas perguntas já usam o que você mudar.'
+                  : space === 'demo'
+                    ? 'fica só para você, nesta agenda fictícia, por duas horas.'
+                    : 'entra na sua agenda e já pode ser perguntado.'}
               </DialogDescription>
+              {editing && spansDays(editing) && (
+                <p className="font-hand text-[1.15rem] leading-tight text-primary">
+                  este compromisso ocupa mais de um dia; ao salvar, ele passa a ocupar só o dia escolhido.
+                </p>
+              )}
             </DialogHeader>
 
             <form onSubmit={submit} noValidate className="grid gap-4">
               <Field label="O quê" htmlFor="titulo" state={stateOf('titulo')}>
-                <Input id="titulo" aria-required maxLength={120} autoFocus={!llm} value={form.titulo}
+                <Input id="titulo" aria-required maxLength={120} autoFocus={!sentenceBox} value={form.titulo}
                   onChange={(e) => set('titulo')(e.target.value)} placeholder="Dentista, reunião com a padaria…" />
               </Field>
 
@@ -281,7 +314,7 @@ export function EventForm({ open, space, llm, seed, onOpenChange, onSaved }: Pro
                 </button>
                 <Button ref={submitRef} type="submit" variant="ghost" disabled={saving}
                   className={cn(STAMP_BUTTON, '-rotate-1 px-4 py-2 text-[12px]')}>
-                  {saving ? 'Anotando…' : 'Anotar na agenda'}
+                  {saving ? (editing ? 'Salvando…' : 'Anotando…') : editing ? 'Salvar alterações' : 'Anotar na agenda'}
                 </Button>
               </div>
             </form>

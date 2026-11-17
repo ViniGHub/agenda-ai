@@ -7,7 +7,9 @@
   restarts (Neon in production). Every query is scoped to one owner.
 
 Events have an origin: "base" (indexed from an .ics at startup, read-only), "cadastro" (created
-by the person) or "importado" (imported from their .ics). Only the last two can be deleted.
+by the person) or "importado" (imported from their .ics). Only the last two can be edited or deleted.
+An edit keeps the event's identity (uid and the key of its first version), so importing the same
+.ics again does not bring the original back next to the edited one.
 """
 
 from __future__ import annotations
@@ -48,6 +50,11 @@ class EventStore(Protocol):
 
     def add(self, events: Sequence[Event], vectors: np.ndarray, origin: str) -> list[StoredEvent]:
         """Adds events; one already present (same uid and start) is skipped, not duplicated."""
+        ...
+
+    def update(self, event_id: int, event: Event, vector: np.ndarray) -> StoredEvent | None:
+        """Replaces the fields (and the vector) of an event created or imported by the person.
+        None when there is no such event, or it is a base event."""
         ...
 
     def delete(self, event_id: int) -> bool:
@@ -255,6 +262,32 @@ class SqliteEventStore:
         with self.conn:
             ids = [_insert(self.conn, event, vector, origin) for event, vector in zip(events, vectors)]
         return list(self.get_events([i for i in ids if i is not None]).values())
+
+    def update(self, event_id, event, vector):
+        with self.conn:
+            cur = self.conn.execute(
+                """update events set title = ?, start_ts = ?, end_ts = ?, all_day = ?, location = ?,
+                                     attendees = ?, description = ?
+                   where id = ? and origin != ?""",
+                (
+                    event.title, int(event.start.timestamp()), int(event.end.timestamp()), int(event.all_day),
+                    event.location, "; ".join(event.attendees), event.description, event_id, BASE,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+            # The word and vector indexes are rewritten for this row (vec0 has no in-place update).
+            self.conn.execute("delete from events_fts where rowid = ?", (event_id,))
+            self.conn.execute(
+                "insert into events_fts (rowid, title, location, attendees, description) values (?, ?, ?, ?, ?)",
+                (event_id, event.title, event.location, ", ".join(event.attendees), event.description),
+            )
+            self.conn.execute("delete from events_vec where rowid = ?", (event_id,))
+            self.conn.execute(
+                "insert into events_vec (rowid, embedding, start_ts) values (?, ?, ?)",
+                (event_id, np.asarray(vector, dtype=np.float32).tobytes(), int(event.start.timestamp())),
+            )
+        return self.get_events([event_id]).get(event_id)
 
     def delete(self, event_id):
         with self.conn:

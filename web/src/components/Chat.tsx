@@ -23,6 +23,7 @@ export interface NoteHandlers {
   confirm: (messageId: number) => Promise<void>
   undo: (messageId: number) => Promise<void>
   edit: (messageId: number) => void
+  editSaved: (messageId: number) => void
   dismiss: (messageId: number) => void
   askInstead: (messageId: number) => void
   writeDown: (messageId: number) => void // a "not found" reply to a statement: read it as a new appointment
@@ -172,6 +173,7 @@ export function Chat({
                         onConfirm={() => notes.confirm(message.id)}
                         onUndo={() => notes.undo(message.id)}
                         onEdit={() => notes.edit(message.id)}
+                        onEditSaved={() => notes.editSaved(message.id)}
                         onDismiss={() => notes.dismiss(message.id)}
                         onAskInstead={() => notes.askInstead(message.id)}
                         onShowEvent={onShowEvent}

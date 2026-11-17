@@ -53,6 +53,8 @@ export const askQuestion = (space: Space, pergunta: string, modo: AskMode = 'aut
 
 export const interpretSentence = (space: Space, frase: string) => post<Suggestion>(`/api/${space}/interpretar`, { frase })
 export const addEvent = (space: Space, draft: EventDraft) => post<AgendaEvent>(`/api/${space}/compromissos`, draft)
+export const updateEvent = (space: Space, id: number, draft: EventDraft) =>
+  request<AgendaEvent>(`/api/${space}/compromissos/${id}`, { method: 'PUT', body: JSON.stringify(draft) })
 export const deleteEvent = (space: Space, id: number) =>
   request<{ apagado: number }>(`/api/${space}/compromissos/${id}`, { method: 'DELETE' })
 export const importIcs = (conteudo: string) => post<ImportResult>('/api/minha/importar', { conteudo })

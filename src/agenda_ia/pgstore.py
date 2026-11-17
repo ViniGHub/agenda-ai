@@ -170,6 +170,20 @@ class PostgresEventStore:
                     added.append(_to_stored(row))
         return added
 
+    def update(self, event_id, event, vector):
+        # dono, chave, uid and origem stay: the event keeps its identity. The tsvector column follows by itself.
+        rows = self._rows(
+            f"""update eventos set titulo = %s, inicio = %s, fim = %s, dia_inteiro = %s, local = %s,
+                                  participantes = %s, notas = %s, embedding = %s::vector
+                where dono = %s and id = %s and origem <> %s
+                returning {COLUMNS}""",
+            [
+                event.title, event.start, event.end, event.all_day, event.location, "; ".join(event.attendees),
+                event.description, _vector(vector), self.owner, event_id, BASE,
+            ],
+        )
+        return _to_stored(rows[0]) if rows else None
+
     def delete(self, event_id):
         with self.db.pool.connection() as conn:
             cur = conn.execute(

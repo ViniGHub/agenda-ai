@@ -32,7 +32,7 @@ import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time  # the module name "time" is taken by the clock below
 from pathlib import Path
@@ -52,7 +52,7 @@ from .drafting import NoEventError, Suggestion, draft_from_text, explicit_reques
 from .editing import MAX_IMPORT_CHARS, EventDraft, ImportError_, import_events
 from .llm import LLMError, UnavailableModel
 from .speech import AUDIO_TYPES, Transcriber, UnavailableTranscriber
-from .store import CREATED, IMPORTED, SqliteEventStore, StoredEvent
+from .store import BASE, CREATED, IMPORTED, SqliteEventStore, StoredEvent
 
 WEB_DIST = ROOT / "web" / "dist"
 MAX_QUESTION_CHARS = 300
@@ -511,6 +511,19 @@ def create_app(
             raise HTTPException(409, "Esse compromisso já existe.")
         return event_out(added[0])
 
+    def update_in(s: AppState, ws: Workspace, event_id: int, draft: EventDraft) -> EventOut:
+        missing = HTTPException(404, "Compromisso não encontrado, ou ele faz parte da agenda original.")
+        with s.lock:
+            current = ws.store.get_events([event_id]).get(event_id)
+            if current is None or current.origin == BASE:
+                raise missing
+            event = replace(draft.to_event(), uid=current.event.uid)  # same identity, new fields
+            vector = ws.assistant.embedder.passages([event.search_text()])[0]
+            updated = ws.store.update(event_id, event, vector)
+        if updated is None:
+            raise missing
+        return event_out(updated)
+
     def delete_from(s: AppState, ws: Workspace, event_id: int) -> dict:
         with s.lock:
             if not ws.store.delete(event_id):
@@ -583,6 +596,11 @@ def create_app(
     def demo_add(draft: EventDraft, request: Request, response: Response) -> EventOut:
         return add_to(state(request), demo_workspace(request, response, create=True), draft)
 
+    @app.put("/api/demo/compromissos/{event_id}", response_model=EventOut,
+             dependencies=[Depends(same_site_only), Depends(limit_writes)])
+    def demo_update(event_id: int, draft: EventDraft, request: Request) -> EventOut:
+        return update_in(state(request), demo_workspace(request), event_id, draft)
+
     @app.delete("/api/demo/compromissos/{event_id}", dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def demo_delete(event_id: int, request: Request) -> dict:
         return delete_from(state(request), demo_workspace(request), event_id)
@@ -619,6 +637,11 @@ def create_app(
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def own_add(draft: EventDraft, request: Request, user: User = Depends(require_user)) -> EventOut:
         return add_to(state(request), private_workspace(request, user), draft)
+
+    @app.put("/api/minha/compromissos/{event_id}", response_model=EventOut,
+             dependencies=[Depends(same_site_only), Depends(limit_writes)])
+    def own_update(event_id: int, draft: EventDraft, request: Request, user: User = Depends(require_user)) -> EventOut:
+        return update_in(state(request), private_workspace(request, user), event_id, draft)
 
     @app.delete("/api/minha/compromissos/{event_id}", dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def own_delete(event_id: int, request: Request, user: User = Depends(require_user)) -> dict:
