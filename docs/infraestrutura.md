@@ -94,7 +94,8 @@ O container escuta na porta que o Cloud Run informa na variável `$PORT` (8080).
 
 ### Artifact Registry
 
-- Guarda as imagens prontas no repositório `cloud-run-source-deploy` (criado no primeiro deploy). Cada imagem tem ~1,5 GB.
+- Guarda as imagens prontas no repositório `cloud-run-source-deploy` (criado no primeiro deploy), uma por deploy. Cada imagem tem ~715 MB compactados; as camadas iguais entre imagens (Python, PyTorch, o modelo) são guardadas uma vez só.
+- No console: menu ☰ → Artifact Registry → Repositórios → `cloud-run-source-deploy` → `agenda-ia`. Ou pelo Cloud Run → Revisões: cada revisão mostra o digest da imagem que usa.
 - É o único item que pode custar algo: a cota gratuita é de 0,5 GB, e cada deploy adiciona uma imagem. Ver "Limpeza das imagens antigas" na seção 5.
 
 ### Secret Manager
@@ -319,7 +320,7 @@ E apague o ID do cliente OAuth em Credenciais, o segredo `agenda-ia-banco` (se e
 |---|---|---|
 | Cloud Run | 2 milhões de requisições, 180 mil vCPU-segundos, 360 mil GiB-segundos | muito abaixo |
 | Cloud Build | cota gratuita de minutos de build | poucos deploys por mês |
-| Artifact Registry | 0,5 GB de armazenamento | ~1,5 GB por imagem: centavos por mês sem a limpeza |
+| Artifact Registry | 0,5 GB de armazenamento | ~715 MB por imagem (camadas repetidas não contam de novo): centavos por mês sem a limpeza |
 | Secret Manager | 6 versões ativas e 10 mil acessos | 3 segredos |
 | Cloud Logging | 50 GiB de logs | muito abaixo |
 | Groq | plano gratuito (8.000 tokens/minuto) | ~2 mil tokens por pergunta |
