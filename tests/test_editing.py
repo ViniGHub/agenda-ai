@@ -85,7 +85,7 @@ def test_demo_additions_go_to_the_visitors_own_copy(client, sample_db):
     base_count = sample_db.count()
     response = client.post("/api/demo/compromissos", json=_draft(titulo="Show da banda"), headers=HEADERS)
     assert response.status_code == 201 and response.json()["origem"] == "cadastro"
-    assert "agenda_demo" in response.headers["set-cookie"]
+    assert "__session" in response.headers["set-cookie"]
     assert client.get("/api/demo/status").json()["eventos"] == base_count + 1
     assert sample_db.count() == base_count  # the shared demo is untouched
 

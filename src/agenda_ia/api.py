@@ -4,7 +4,7 @@
 
 Two workspaces share the same question pipeline:
   /api/demo/...   the fictitious agenda, open to anyone. Events a visitor adds go to a private copy
-                  of the demo, kept in memory for a couple of hours and tied to an anonymous cookie.
+                  of the demo, kept in memory for a couple of hours and tied to the session cookie.
   /api/minha/...  the signed-in person's own agenda (Google sign-in + allowlist, see auth.py).
                   Stored in Postgres when DATABASE_URL is set (Neon), otherwise in memory.
 
@@ -56,7 +56,6 @@ from .store import CREATED, IMPORTED, SqliteEventStore, StoredEvent
 
 WEB_DIST = ROOT / "web" / "dist"
 MAX_QUESTION_CHARS = 300
-DEMO_COOKIE = "agenda_demo"
 DEMO_SESSION_SECONDS = 2 * 60 * 60
 DEMO_MAX_SESSIONS = 200
 MAX_EVENTS_PER_AGENDA = 3_000
@@ -358,6 +357,19 @@ def create_app(
 
     app = FastAPI(title="agenda-ia", version="0.5.0", lifespan=lifespan)
 
+    @app.middleware("http")
+    async def cache_rules(request: Request, call_next):
+        # Firebase Hosting is a CDN in front of this app: say what it may keep.
+        response = await call_next(request)
+        path = request.url.path
+        if path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"  # personal answers, never cached
+        elif path.startswith("/assets/"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"  # names carry a content hash
+        else:
+            response.headers["Cache-Control"] = "no-cache"  # index.html: always check for a new build
+        return response
+
     def state(request: Request) -> AppState:
         return request.app.state.agenda
 
@@ -367,8 +379,18 @@ def create_app(
         if request.headers.get(CSRF_HEADER) != CSRF_VALUE:
             raise HTTPException(403, "Requisição recusada.")
 
+    def session_of(request: Request) -> dict:
+        return auth.read_session(request.cookies.get(COOKIE_NAME))
+
+    def save_session(response: Response, session: dict) -> None:
+        if session:
+            response.set_cookie(COOKIE_NAME, auth.session_cookie(session), max_age=SESSION_SECONDS,
+                                httponly=True, secure=True, samesite="lax", path="/")
+        else:
+            response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+
     def current_user(request: Request) -> User | None:
-        return auth.user_from_cookie(request.cookies.get(COOKIE_NAME))
+        return auth.user_in(session_of(request))
 
     def require_user(request: Request) -> User:
         user = current_user(request)
@@ -514,26 +536,25 @@ def create_app(
             user = auth.login(body.credential)
         except AuthError as error:
             raise HTTPException(error.status, error.message)
-        response.set_cookie(
-            COOKIE_NAME, auth.cookie_for(user), max_age=SESSION_SECONDS,
-            httponly=True, secure=True, samesite="lax", path="/",
-        )
+        save_session(response, auth.with_user(session_of(request), user))  # keeps the visitor's demo copy
         return MeOut(logado=True, nome=user.name, email=user.email)
 
     @app.post("/api/logout", response_model=MeOut, dependencies=[Depends(same_site_only)])
-    def logout(response: Response) -> MeOut:
-        response.delete_cookie(COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax")
+    def logout(request: Request, response: Response) -> MeOut:
+        session = session_of(request)
+        session.pop("user", None)
+        save_session(response, session)
         return MeOut(logado=False)
 
     # ----- demo workspace (open; additions go to the visitor's temporary copy) -----
 
     def demo_workspace(request: Request, response: Response | None = None, create: bool = False) -> Workspace:
         s = state(request)
+        session = session_of(request)
         with s.lock:
-            ws, token = s.demo_for(request.cookies.get(DEMO_COOKIE), create)
-        if response is not None and token and token != request.cookies.get(DEMO_COOKIE):
-            response.set_cookie(DEMO_COOKIE, token, max_age=DEMO_SESSION_SECONDS,
-                                httponly=True, secure=True, samesite="lax", path="/")
+            ws, token = s.demo_for(session.get("demo"), create)
+        if response is not None and token and token != session.get("demo"):
+            save_session(response, {**session, "demo": token})
         return ws
 
     @app.get("/api/demo/status", response_model=StatusOut)

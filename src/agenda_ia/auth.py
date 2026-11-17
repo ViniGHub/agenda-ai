@@ -6,6 +6,11 @@ Flow: the browser gets an ID token (a JWT signed by Google) from the official
 the e-mail against the allowlist and answer with an HttpOnly cookie. The token
 itself is never stored.
 
+One signed cookie, "__session", carries everything the server keeps per browser: the signed-in
+person and the token of their private copy of the demo. One cookie, with that exact name, because
+Firebase Hosting (the clean address in front of Cloud Run) strips every other cookie on the way in.
+The login part keeps its own clock, so re-signing the cookie for the demo never extends a login.
+
 Configuration (environment variables; none of them goes into the repository):
   GOOGLE_CLIENT_ID          OAuth client ID of the web app (public, shown to the browser)
   AGENDA_IA_PERMITIDOS      allowed e-mails, comma separated
@@ -17,6 +22,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -24,7 +30,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 
 log = logging.getLogger(__name__)
 
-COOKIE_NAME = "agenda_sessao"
+COOKIE_NAME = "__session"  # the only cookie Firebase Hosting forwards to Cloud Run
 SESSION_SECONDS = 8 * 60 * 60
 CSRF_HEADER = "x-requested-with"  # a custom header: cross-site forms cannot send it without a CORS preflight
 CSRF_VALUE = "agenda-ia"
@@ -94,17 +100,41 @@ class AuthSettings:
             raise AuthError(403, "Esta conta não tem acesso à área privada. Use o modo de teste com a agenda fictícia.")
         return User(email=email, name=str(claims.get("name") or email.split("@")[0]), sub=str(claims.get("sub", "")))
 
-    def cookie_for(self, user: User) -> str:
-        return self._serializer().dumps({"email": user.email, "name": user.name, "sub": user.sub})
+    # ----- the session cookie: {"user": {...}, "demo": "token"}, either part optional -----
 
-    def user_from_cookie(self, cookie: str | None) -> User | None:
+    def read_session(self, cookie: str | None) -> dict:
+        """The cookie's contents, or {} when it is missing, forged or older than a session."""
         if not cookie:
-            return None
+            return {}
         try:
             data = self._serializer().loads(cookie, max_age=SESSION_SECONDS)
         except BadSignature:  # also covers expired cookies
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def session_cookie(self, session: dict) -> str:
+        return self._serializer().dumps(session)
+
+    def with_user(self, session: dict, user: User) -> dict:
+        return {**session, "user": {"email": user.email, "name": user.name, "sub": user.sub, "at": int(time.time())}}
+
+    def user_in(self, session: dict) -> User | None:
+        data = session.get("user")
+        if not isinstance(data, dict):
+            return None
+        try:
+            signed_in_at = float(data.get("at", 0))
+        except (TypeError, ValueError):
+            return None
+        if time.time() - signed_in_at > SESSION_SECONDS:
             return None
         email = str(data.get("email", "")).lower()
         if email not in self.allowed:  # removed from the allowlist since logging in
             return None
         return User(email=email, name=str(data.get("name", "")), sub=str(data.get("sub", "")))
+
+    def cookie_for(self, user: User) -> str:
+        return self.session_cookie(self.with_user({}, user))
+
+    def user_from_cookie(self, cookie: str | None) -> User | None:
+        return self.user_in(self.read_session(cookie))

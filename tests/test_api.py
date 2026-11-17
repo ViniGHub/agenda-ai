@@ -92,7 +92,7 @@ def test_sentence_fills_the_form_and_saves_nothing(sample_db, fake_embedder):
     assert body["participantes"] == ["Ana"] and body["notas"] == "" and body["faltando"] == []
     assert body["tokens"] == 110
     assert after == before
-    assert "agenda_demo" not in response.cookies  # no private copy of the demo is created just to read a sentence
+    assert "__session" not in response.cookies  # no private copy of the demo is created just to read a sentence
 
 
 def test_sentence_reports_missing_fields(sample_db, fake_embedder):
@@ -150,7 +150,7 @@ def test_explicit_order_in_the_chat_is_saved_with_the_event(sample_db, fake_embe
         assert body["acao"]["tipo"] == "anotado" and body["acao"]["evento"]["origem"] == "cadastro"
         assert body["resposta"].startswith("Anotei na agenda: Dentista,") and "Clínica Sorriso" in body["resposta"]
         assert body["detalhes"]["tipo"] == "anotar" and body["detalhes"]["chamadas"] == 2
-        assert "agenda_demo" in response.cookies  # saved in the visitor's own copy of the demo
+        assert "__session" in response.cookies  # saved in the visitor's own copy of the demo
         assert client.get("/api/demo/status").json()["eventos"] == before + 1
         undo = client.delete(f"/api/demo/compromissos/{body['acao']['evento']['id']}", headers=HEADERS)
         assert undo.status_code == 200
@@ -186,7 +186,7 @@ def test_questions_carry_no_action(sample_db, fake_embedder):
                       {"resposta": "Terça às 8h.", "citacoes": [1], "encontrou": True})
     with _client(sample_db, fake_embedder, model) as client:
         response = _ask(client, "quando é o dentista?")
-    assert response.json()["acao"] is None and "agenda_demo" not in response.cookies
+    assert response.json()["acao"] is None and "__session" not in response.cookies
 
 
 def test_write_it_down_button_reads_the_message_and_asks_first(sample_db, fake_embedder):

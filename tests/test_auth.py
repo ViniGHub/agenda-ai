@@ -47,6 +47,14 @@ def client(sample_db, fake_embedder):
         yield c
 
 
+def _soon():
+    from datetime import datetime, timedelta
+
+    from agenda_ia.config import TZ
+
+    return (datetime.now(TZ).date() + timedelta(days=2)).isoformat()
+
+
 def _login(client, token="token-dono"):
     return client.post("/api/login", json={"credential": token}, headers=HEADERS)
 
@@ -122,3 +130,27 @@ def test_login_disabled_without_configuration(sample_db, fake_embedder):
     with TestClient(create_app(load, RateLimiter(5, 600), auth), base_url="https://testserver") as client:
         assert client.get("/api/config").json() == {"login": False, "google_client_id": None}
         assert _login(client).status_code == 503
+
+
+def test_one_cookie_holds_the_login_and_the_demo_copy(client):
+    assert _login(client).status_code == 200
+    added = client.post("/api/demo/compromissos", json={"titulo": "Teste", "data": _soon(), "inicio": "10:00"},
+                        headers=HEADERS)
+    assert added.status_code == 201
+    assert list(client.cookies.keys()) == [COOKIE_NAME]  # Firebase Hosting forwards only "__session"
+    assert client.get("/api/minha/status").status_code == 200  # still signed in
+    demo_count = client.get("/api/demo/status").json()["eventos"]
+    client.post("/api/logout", headers=HEADERS)
+    assert client.get("/api/minha/status").status_code == 401
+    assert client.get("/api/demo/status").json()["eventos"] == demo_count  # the demo copy survives logout
+
+
+def test_re_signing_for_the_demo_does_not_extend_a_login(client):
+    auth = AuthSettings(CLIENT_ID, frozenset({"dono@example.com"}), "segredo-de-teste", fake_verifier)
+    old_login = {"user": {"email": "dono@example.com", "name": "Dono", "sub": "111", "at": 0}, "demo": "x"}
+    client.cookies.set(COOKIE_NAME, auth.session_cookie(old_login))
+    assert client.get("/api/minha/status").status_code == 401
+
+
+def test_api_answers_are_never_cached(client):
+    assert client.get("/api/demo/status").headers["cache-control"] == "no-store"
