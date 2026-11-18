@@ -27,7 +27,7 @@ if [ ! -x "$VENV/bin/pytest" ]; then
   "$VENV/bin/pip" install -q --upgrade pip
   "$VENV/bin/pip" install -q --no-deps --ignore-requires-python -e .
   "$VENV/bin/pip" install -q numpy icalendar recurring-ical-events pydantic python-dotenv sqlite-vec tzdata \
-    "psycopg[binary]" psycopg-pool pytest
+    "psycopg[binary]" psycopg-pool cryptography pytest
 fi
 
 echo "Rodando os testes do Postgres..."

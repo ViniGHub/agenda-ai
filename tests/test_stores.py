@@ -167,7 +167,7 @@ def test_google_links_follow_each_event(make_store, fake_embedder):
     assert [(s.id, s.google_id) for s in store.events_between(None, None)] == [(mine.id, None)]
 
 
-def test_google_connections_are_encrypted_at_rest(fake_embedder):
+def test_google_connections_are_encrypted_at_rest_in_postgres(fake_embedder):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL não definido")
