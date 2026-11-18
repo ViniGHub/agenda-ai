@@ -16,7 +16,8 @@ export interface AgendaEvent {
   local: string
   participantes: string[]
   notas: string
-  origem: 'base' | 'cadastro' | 'importado' // only "cadastro" and "importado" can be deleted
+  origem: 'base' | 'cadastro' | 'importado' | 'google' // only "base" cannot be edited or deleted
+  google: boolean // also in the person's Google Calendar
 }
 
 /** What the form sends; the server builds the São Paulo date and times. */
@@ -93,6 +94,30 @@ export interface Config {
   login: boolean
   google_client_id: string | null
   login_redirect: boolean // sign in by going to Google's page and back (works in the installed iPhone app)
+}
+
+/** The private agenda's link with Google Calendar and the 8 o'clock e-mail. */
+export interface GoogleStatus {
+  disponivel: boolean // the server can connect Google accounts
+  conectado: boolean
+  email: string | null
+  agenda: boolean // allowed to read and write Google Calendar
+  gmail: boolean // allowed to send e-mail
+  resumo_diario: boolean // the morning e-mail is on
+  resumo_hora: string // HH:MM
+  sincronizado_em: string | null
+}
+
+export interface SyncResult {
+  novos: number
+  atualizados: number
+  apagados: number
+  sincronizado_em: string
+}
+
+export interface SummaryResult {
+  enviado_para: string
+  compromissos: number
 }
 
 export interface Me {

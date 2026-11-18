@@ -25,11 +25,13 @@ REGIAO=us-east1
                          │                                     └─ revisão ─► instância (container)   │
                          │                                          │   ▲                             │
                          │                         Secret Manager ──┘   │  Cloud Logging (logs)       │
-                         │                         (3 segredos)         │                             │
-                         │  IAM: contas de serviço agenda-ia-run e agenda-ia-build                    │
+                         │                         (5 segredos)         │                             │
+                         │  IAM: contas agenda-ia-run, agenda-ia-build e agenda-ia-agendador          │
+                         │  Cloud Scheduler: às 8h chama o serviço, que manda o e-mail do dia         │
                          │  Google Auth Platform: tela de consentimento + ID do cliente OAuth         │
                          └────────────────────────────────────────────────────────────────────────────┘
-        fora do Google:  GitHub (código) · Groq (LLM) · Hugging Face Hub (modelo, só no build)
+        fora do Google:  GitHub (código) · Groq (LLM) · Hugging Face Hub (modelo, só no build) · Neon (banco)
+        em nome de quem conectar a conta: Google Agenda (eventos) · Gmail (só enviar)
 ```
 
 São dois caminhos que nunca se misturam:
@@ -49,7 +51,7 @@ São dois caminhos que nunca se misturam:
 
 ### APIs ativadas
 
-Um projeto novo começa com quase tudo desligado. O script ativa quatro APIs:
+Um projeto novo começa com quase tudo desligado. O `cloud-run.sh` ativa seis APIs, e o `agendador.sh` uma sétima:
 
 | API | Para quê |
 |---|---|
@@ -57,6 +59,9 @@ Um projeto novo começa com quase tudo desligado. O script ativa quatro APIs:
 | `cloudbuild.googleapis.com` | compilar a imagem |
 | `artifactregistry.googleapis.com` | guardar a imagem |
 | `secretmanager.googleapis.com` | guardar chaves e a lista de e-mails |
+| `calendar-json.googleapis.com` | ler e gravar eventos no Google Agenda de quem conectar a conta |
+| `gmail.googleapis.com` | enviar o e-mail das 8h pelo Gmail de quem conectar a conta |
+| `cloudscheduler.googleapis.com` | disparar o e-mail às 8h (só no `agendador.sh`) |
 
 ### Cloud Run: serviço, revisão, instância
 
@@ -78,8 +83,8 @@ A configuração, e o porquê de cada valor (está em [`deploy/cloud-run.sh`](..
 | `--timeout` | 120 s | uma pergunta leva 1 a 15 s; folga para o Groq quando a cota aperta |
 | `--allow-unauthenticated` | sim | o site é público; quem controla a área privada é a aplicação (login) |
 | `--service-account` | `agenda-ia-run` | identidade do container (seção IAM) |
-| `--set-secrets` | 3 segredos | viram variáveis de ambiente quando a instância liga |
-| `--update-env-vars` | `GOOGLE_CLIENT_ID` | valor público do login com Google |
+| `--set-secrets` | até 5 segredos | viram variáveis de ambiente quando a instância liga |
+| `--update-env-vars` | `GOOGLE_CLIENT_ID`, `AGENDA_IA_URL`, `AGENDA_IA_AGENDADOR` | ID público do login, endereço público (volta do Google) e a conta que pode disparar tarefas |
 
 O container escuta na porta que o Cloud Run informa na variável `$PORT` (8080). O [`Dockerfile`](../Dockerfile) já faz isso.
 
@@ -96,11 +101,11 @@ O container escuta na porta que o Cloud Run informa na variável `$PORT` (8080).
 
 - Guarda as imagens prontas no repositório `cloud-run-source-deploy` (criado no primeiro deploy), uma por deploy. Cada imagem tem ~715 MB compactados; as camadas iguais entre imagens (Python, PyTorch, o modelo) são guardadas uma vez só.
 - No console: menu ☰ → Artifact Registry → Repositórios → `cloud-run-source-deploy` → `agenda-ia`. Ou pelo Cloud Run → Revisões: cada revisão mostra o digest da imagem que usa.
-- É o único item que pode custar algo: a cota gratuita é de 0,5 GB, e cada deploy adiciona uma imagem. Ver "Limpeza das imagens antigas" na seção 5.
+- É o único item que custa algo: a cota gratuita é de 0,5 GB, e cada deploy adiciona uma imagem. Medido em 18/11/2026, sem limpeza: 12 imagens, 8,5 GB, uns US$ 0,80 por mês (US$ 0,10 por GB acima da cota). Ver "Limpeza das imagens antigas" na seção 5.
 
 ### Secret Manager
 
-Três segredos criados pelo script e um opcional:
+Três segredos criados pelo script e dois opcionais:
 
 | Segredo | Variável no container | Conteúdo | Quem cria |
 |---|---|---|---|
@@ -108,6 +113,9 @@ Três segredos criados pelo script e um opcional:
 | `agenda-ia-sessao` | `AGENDA_IA_SESSAO_SEGREDO` | chave que assina os cookies de login | o script gera aleatoriamente |
 | `agenda-ia-permitidos` | `AGENDA_IA_PERMITIDOS` | e-mails com acesso à área privada, separados por vírgula | você digita |
 | `agenda-ia-banco` (opcional) | `DATABASE_URL` | endereço de conexão do Postgres (Neon) | você cria (seção Neon); o script só o liga se existir |
+| `agenda-ia-google-segredo` (opcional) | `GOOGLE_CLIENT_SECRET` | chave secreta do cliente OAuth: liga o login por redirecionamento e a conexão com o Google Agenda | você cria (seção Google Auth Platform) |
+
+A cota gratuita é de 6 versões ativas; com os cinco, são 5. Por isso a chave que cifra os tokens do Google não é um segredo a mais: ela é derivada (HKDF) do `agenda-ia-sessao`.
 
 - Cada segredo tem **versões**. O Cloud Run usa a `latest`, lida **quando a instância liga**.
 - Para trocar um valor: grave uma versão nova (o segredo guarda o valor inteiro, então a lista de e-mails vai completa):
@@ -122,7 +130,7 @@ Três segredos criados pelo script e um opcional:
   gcloud run services update agenda-ia --region $REGIAO --update-labels atualizado=$(date +%s)
   ```
 
-- Trocar `agenda-ia-sessao` desconecta todo mundo (os cookies antigos deixam de ser válidos).
+- Trocar `agenda-ia-sessao` desconecta todo mundo (os cookies antigos deixam de ser válidos) e também as contas Google conectadas (os tokens guardados ficam ilegíveis; é só conectar de novo).
 
 ### IAM: quem pode o quê
 
@@ -131,6 +139,7 @@ Três segredos criados pelo script e um opcional:
 | você (dono) | Proprietário | tudo; dispara o deploy pelo Cloud Shell | |
 | `agenda-ia-build` | Cloud Run Builder (no projeto) | ler o código enviado, gravar a imagem, escrever o log do build | mexer em serviços, segredos, VMs |
 | `agenda-ia-run` | Secret Manager Secret Accessor (só nos segredos do app) | ler esses segredos | qualquer outra coisa no projeto |
+| `agenda-ia-agendador` | nenhum | assinar a chamada das 8h (o Cloud Scheduler gera o token em nome dela) | qualquer coisa no projeto; a API confere que o token é dela |
 | `allUsers` | Cloud Run Invoker (no serviço) | chamar o site | |
 
 É o princípio do **menor privilégio**: se alguém invadisse o container, só conseguiria ler as variáveis que o container já tem.
@@ -141,6 +150,7 @@ O container do Cloud Run perde a memória quando desliga, então a agenda privad
 
 - **Tabela:** uma só, `eventos`, criada pela própria API na primeira conexão ([`pgstore.py`](../src/agenda_ia/pgstore.py)). Cada linha tem o dono (ID da conta Google), os campos do compromisso, o vetor de 384 números (`vector(384)`) e uma coluna `tsvector` gerada para a busca por palavra.
 - **Índices:** `(dono, inicio)` para listar por data, GIN no `tsvector` e HNSW no vetor (distância de cosseno).
+- **Google Agenda:** cada evento ligado ao Google guarda o ID e a *etag* do Google (`google_id`, `google_etag`). A tabela `contas_google` tem uma linha por conta conectada: e-mail, permissões, se o e-mail das 8h está ligado, o dia do último envio e o *refresh token*, **cifrado** (Fernet) com uma chave derivada do segredo da sessão.
 - **Isolamento:** toda consulta tem `where dono = ...`, inclusive a exclusão.
 - **Sem o banco:** se o segredo `agenda-ia-banco` não existir, a agenda privada fica em memória e a tela avisa que é temporária.
 
@@ -162,13 +172,13 @@ Para testar o SQL sem o Neon, [`scripts/testar-postgres.sh`](../scripts/testar-p
 
 Duas peças, em APIs e serviços / Google Auth Platform:
 
-- **Tela de consentimento** (Branding / Público-alvo / Acesso a dados): o nome do app que aparece na janela de login, e o público "Externo". O login só pede `openid`, `email` e `profile`, escopos que não exigem verificação do Google.
+- **Tela de consentimento** (Branding / Público-alvo / Acesso a dados): o nome do app que aparece na janela de login, e o público "Externo". O login só pede `openid`, `email` e `profile`, escopos que não exigem verificação do Google. Conectar o Google Agenda pede mais dois, `calendar.events` e `gmail.send`, que são "sensíveis": como o app não passou pela verificação do Google, a tela mostra uma vez o aviso "o Google não verificou este app" (Avançado → continuar), e o app fica limitado a 100 contas, o que basta para uso pessoal. Em **Produção**, o acesso dado não expira; em **Teste**, o Google o derrubaria a cada 7 dias.
   - Se o app estiver em modo **Teste**, só os "usuários de teste" listados ali conseguem passar pela janela do Google.
   - Em **Produção**, qualquer conta Google passa pela janela, e quem decide o acesso é a lista do segredo `agenda-ia-permitidos`.
 - **ID do cliente OAuth** do tipo *Aplicativo da Web*:
   - **Origens JavaScript autorizadas:** os endereços de onde o botão pode ser usado: `https://agenda-ia.web.app`, os dois endereços do serviço no Cloud Run, `http://localhost:8000` e `http://localhost`.
-  - **URIs de redirecionamento:** vazio (o login é por janela, não por redirecionamento).
-  - O **ID** é público (vai para o navegador). A **chave secreta do cliente** não é usada por este app.
+  - **URIs de redirecionamento autorizados:** `https://agenda-ia.web.app/api/login/google/retorno`, a volta do login e também da conexão com o Google Agenda. Atenção: ela vai nesta seção, não em "Origens", que recusa endereço com caminho.
+  - O **ID** é público (vai para o navegador). A **chave secreta do cliente** fica no segredo `agenda-ia-google-segredo`: com ela o servidor troca o código da volta pelos tokens. O Google só mostra a chave inteira na hora em que ela é criada ("+ Add secret").
 
 A verificação do login acontece no servidor ([`auth.py`](../src/agenda_ia/auth.py)): assinatura do token com as chaves públicas do Google, público igual ao ID do cliente, emissor, validade, e-mail verificado e presença na lista.
 
@@ -184,6 +194,14 @@ O endereço do Cloud Run (`agenda-ia-NUMERO.us-east1.run.app`) sempre leva o nú
   - **Tempo:** pedidos que passam de 60 segundos recebem erro 504, mesmo que o Cloud Run aceite 120. As respostas mais lentas daqui levam uns 20 segundos, quando a cota do Groq está apertada.
 - **Cache:** a API manda `Cache-Control: no-store` nas rotas `/api` (respostas pessoais nunca ficam no CDN), `public, max-age=31536000, immutable` em `/assets` (os nomes têm hash) e `no-cache` no resto.
 - O endereço do Cloud Run continua no ar; o Hosting é só mais uma porta.
+
+### Cloud Scheduler (o e-mail das 8h)
+
+- **O que é:** o "cron" do Google Cloud. A tarefa `agenda-ia-resumo-diario` roda todo dia às 8h, fuso `America/Sao_Paulo`, e faz um `POST` em `/api/tarefas/resumo-diario` no endereço do Cloud Run (direto, sem passar pelo Firebase Hosting).
+- **Quem pode chamar:** o serviço é público, então a própria API confere quem chamou. O Scheduler manda um **token OIDC** assinado pelo Google em nome da conta `agenda-ia-agendador`, com o público `agenda-ia-tarefas`. A API verifica a assinatura, o público e o e-mail da conta (variável `AGENDA_IA_AGENDADOR`); qualquer outra chamada recebe 401 ou 403.
+- **O que a chamada faz:** para cada conta com o e-mail ligado, sincroniza o Google Agenda, monta a lista do dia e envia pelo Gmail da própria pessoa. Se o Scheduler tentar de novo (até 2 vezes), o e-mail não sai duplicado: cada conta guarda o dia do último envio.
+- **Como criar:** [`deploy/agendador.sh`](../deploy/agendador.sh), no Cloud Shell, depois do deploy. Para testar sem esperar o dia seguinte: `gcloud scheduler jobs run agenda-ia-resumo-diario --location us-east1`, ou "enviar agora" na página da agenda.
+- **No console:** menu ☰ → Cloud Scheduler.
 
 ### Cloud Logging
 
@@ -222,6 +240,12 @@ Ou pelo console: Cloud Run → agenda-ia → Registros.
 3. o FastAPI entrega o React (`/`) e responde à API (`/api/...`) na mesma origem;
 4. na pergunta, a API chama o Groq duas vezes (entender a pergunta e responder) e confere as citações;
 5. sem visitas por ~15 minutos, a instância desliga.
+
+**E-mail das 8h** (sem ninguém com o site aberto):
+
+1. o Cloud Scheduler chama `/api/tarefas/resumo-diario` com o token da conta do agendador; o Cloud Run liga uma instância se precisar;
+2. a API confere o token e, para cada conta conectada com o e-mail ligado, troca o *refresh token* guardado por um acesso de uma hora;
+3. lê o Google Agenda (só o que mudou é recalculado), monta a lista do dia e a envia pelo Gmail da pessoa, para ela mesma.
 
 ---
 
@@ -268,6 +292,15 @@ Ou pelo console: Cloud Run → agenda-ia → Registros.
    ```
 
    O nome precisa estar livre no Firebase inteiro. Inclua `https://nome-do-site.web.app` nas origens autorizadas do ID do cliente.
+9. **Login no app do iPhone e Google Agenda (opcional).** No ID do cliente, em "URIs de redirecionamento autorizados", inclua `https://nome-do-site.web.app/api/login/google/retorno`. Crie uma chave secreta ("+ Add secret"), guarde-a e publique de novo com o endereço público:
+
+   ```bash
+   read -rs S && printf '%s' "$S" | gcloud secrets create agenda-ia-google-segredo --data-file=- && unset S
+   AGENDA_IA_URL=https://nome-do-site.web.app bash deploy/cloud-run.sh
+   bash deploy/agendador.sh   # o e-mail das 8h
+   ```
+
+   Deixe a tela de consentimento em **Produção**: em Teste, o acesso ao Google Agenda cai a cada 7 dias.
 
 ---
 
@@ -320,8 +353,10 @@ E apague o ID do cliente OAuth em Credenciais, o segredo `agenda-ia-banco` (se e
 |---|---|---|
 | Cloud Run | 2 milhões de requisições, 180 mil vCPU-segundos, 360 mil GiB-segundos | muito abaixo |
 | Cloud Build | cota gratuita de minutos de build | poucos deploys por mês |
-| Artifact Registry | 0,5 GB de armazenamento | ~715 MB por imagem (camadas repetidas não contam de novo): centavos por mês sem a limpeza |
-| Secret Manager | 6 versões ativas e 10 mil acessos | 3 segredos |
+| Artifact Registry | 0,5 GB de armazenamento | ~715 MB por imagem (camadas repetidas não contam de novo). Sem a limpeza, 12 deploys chegaram a 8,5 GB, uns US$ 0,80 por mês; com ela, fica perto da cota |
+| Secret Manager | 6 versões ativas e 10 mil acessos | 5 segredos, uma versão ativa cada |
+| Cloud Scheduler | 3 tarefas por conta de faturamento | 1 tarefa (o e-mail das 8h) |
+| Google Agenda e Gmail (APIs) | sem cobrança, com cotas diárias por usuário | algumas chamadas por dia |
 | Cloud Logging | 50 GiB de logs | muito abaixo |
 | Groq | plano gratuito (8.000 tokens/minuto) | ~2 mil tokens por pergunta |
 | Neon | 1 GB e 100 horas de processamento por projeto; passando do limite, bloqueia gravações em vez de cobrar | alguns MB por agenda |

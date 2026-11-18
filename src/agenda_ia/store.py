@@ -7,7 +7,9 @@
   restarts (Neon in production). Every query is scoped to one owner.
 
 Events have an origin: "base" (indexed from an .ics at startup, read-only), "cadastro" (created
-by the person) or "importado" (imported from their .ics). Only the last two can be edited or deleted.
+by the person), "importado" (imported from their .ics) or "google" (read from their Google
+Calendar). Only base events cannot be edited or deleted. An event that is also in Google Calendar
+keeps Google's id and etag (the version tag), so a sync rewrites only what changed there.
 An edit keeps the event's identity (uid and the key of its first version), so importing the same
 .ics again does not bring the original back next to the edited one.
 """
@@ -27,7 +29,7 @@ from .calendar_loader import Event
 from .config import TZ
 from .text import query_terms
 
-BASE, CREATED, IMPORTED = "base", "cadastro", "importado"
+BASE, CREATED, IMPORTED, GOOGLE = "base", "cadastro", "importado", "google"
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,7 @@ class StoredEvent:
     id: int
     event: Event
     origin: str = BASE
+    google_id: str | None = None  # set when the event is also in the person's Google Calendar
 
 
 class EventStore(Protocol):
@@ -59,6 +62,22 @@ class EventStore(Protocol):
 
     def delete(self, event_id: int) -> bool:
         """Deletes an event created or imported by the person. Base events are never deleted."""
+        ...
+
+    # ----- the link with Google Calendar -----
+
+    def google_links(self, start_ts: int, end_ts: int) -> dict[str, tuple[int, str]]:
+        """Google id -> (local id, etag) of the linked events starting in the window."""
+        ...
+
+    def set_link(self, event_id: int, google_id: str, etag: str) -> None: ...
+
+    def id_for_key(self, key: str) -> int | None:
+        """The event with this uid and start, if any (the key the store uses against duplicates)."""
+        ...
+
+    def forget_google(self) -> int:
+        """Disconnecting: deletes the events read from Google, unlinks the rest. Returns how many were deleted."""
         ...
 
 
@@ -99,9 +118,12 @@ def rebuild(conn: sqlite3.Connection, events: Sequence[Event], vectors: np.ndarr
                 location text not null,
                 attendees text not null,
                 description text not null,
-                origin text not null default 'base'
+                origin text not null default 'base',
+                google_id text,
+                google_etag text
             );
             create index events_start on events(start_ts);
+            create index events_google on events(google_id);
             -- remove_diacritics: "reuniao" finds "reunião"
             create virtual table events_fts using fts5(
                 title, location, attendees, description,
@@ -220,7 +242,7 @@ def _row_to_stored(row: sqlite3.Row) -> StoredEvent:
         attendees=tuple(a for a in row["attendees"].split("; ") if a),
         description=row["description"],
     )
-    return StoredEvent(id=row["id"], event=event, origin=row["origin"])
+    return StoredEvent(id=row["id"], event=event, origin=row["origin"], google_id=row["google_id"])
 
 
 class SqliteEventStore:
@@ -291,9 +313,37 @@ class SqliteEventStore:
 
     def delete(self, event_id):
         with self.conn:
-            cur = self.conn.execute("delete from events where id = ? and origin != ?", (event_id, BASE))
-            if cur.rowcount == 0:
-                return False
-            self.conn.execute("delete from events_fts where rowid = ?", (event_id,))
-            self.conn.execute("delete from events_vec where rowid = ?", (event_id,))
+            return self._delete(event_id)
+
+    def _delete(self, event_id: int) -> bool:
+        cur = self.conn.execute("delete from events where id = ? and origin != ?", (event_id, BASE))
+        if cur.rowcount == 0:
+            return False
+        self.conn.execute("delete from events_fts where rowid = ?", (event_id,))
+        self.conn.execute("delete from events_vec where rowid = ?", (event_id,))
         return True
+
+    def google_links(self, start_ts, end_ts):
+        rows = self.conn.execute(
+            """select id, google_id, google_etag from events
+               where google_id is not null and start_ts >= ? and start_ts < ?""",
+            (start_ts, end_ts),
+        )
+        return {row["google_id"]: (row["id"], row["google_etag"] or "") for row in rows}
+
+    def set_link(self, event_id, google_id, etag):
+        with self.conn:
+            self.conn.execute("update events set google_id = ?, google_etag = ? where id = ? and origin != ?",
+                              (google_id, etag, event_id, BASE))
+
+    def id_for_key(self, key):
+        row = self.conn.execute("select id from events where key = ?", (key,)).fetchone()
+        return row["id"] if row else None
+
+    def forget_google(self):
+        with self.conn:
+            ids = [row["id"] for row in self.conn.execute("select id from events where origin = ?", (GOOGLE,))]
+            for event_id in ids:
+                self._delete(event_id)
+            self.conn.execute("update events set google_id = null, google_etag = null")
+        return len(ids)

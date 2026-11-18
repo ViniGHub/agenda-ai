@@ -16,6 +16,7 @@ const ORIGIN_NOTE: Record<AgendaEvent['origem'], string | null> = {
   base: null,
   cadastro: 'você anotou',
   importado: 'importado',
+  google: 'do google',
 }
 
 /** The whole agenda, day by day, like a planner: the answer key to check what the assistant says. */

@@ -12,6 +12,10 @@ against the allowlist. The token itself is never stored.
 - Popup (local development, no client secret): the official "Sign in with Google" button posts
   the ID token to /api/login.
 
+The same redirect, with purpose "agenda", connects Google Calendar and Gmail (google_link.py):
+more scopes, offline access (a refresh token) and the same return address, so the OAuth client
+needs a single redirect URI.
+
 One signed cookie, "__session", carries everything the server keeps per browser: the signed-in
 person and the token of their private copy of the demo. One cookie, with that exact name, because
 Firebase Hosting (the clean address in front of Cloud Run) strips every other cookie on the way in.
@@ -45,6 +49,7 @@ OAUTH_SECONDS = 10 * 60  # a sign-in started longer ago than this is refused
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 REDIRECT_PATH = "/api/login/google/retorno"
+LOGIN_SCOPES = ("openid", "email", "profile")
 CSRF_HEADER = "x-requested-with"  # a custom header: cross-site forms cannot send it without a CORS preflight
 CSRF_VALUE = "agenda-ia"
 
@@ -140,19 +145,41 @@ class AuthSettings:
             raise AuthError(401, "Não consegui confirmar o login com o Google. Tente de novo.")
         return self._user_from(claims)
 
-    def start_redirect(self, session: dict) -> tuple[str, dict]:
-        """Google's sign-in address, and the session with this attempt's state and nonce."""
+    def start_redirect(self, session: dict, purpose: str = "login", scopes: tuple[str, ...] = LOGIN_SCOPES,
+                       login_hint: str | None = None) -> tuple[str, dict]:
+        """Google's address for this attempt, and the session with its state, nonce and purpose.
+
+        purpose "login": sign in. Anything else (google_link uses "agenda") asks for offline access,
+        so Google returns a refresh token, and shows the consent page again so it always does."""
         if not self.redirect_enabled:
             raise AuthError(503, "O login não está configurado neste servidor.")
         state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
-        query = urlencode({
+        params = {
             "client_id": self.client_id, "redirect_uri": self.redirect_uri, "response_type": "code",
-            "scope": "openid email profile", "state": state, "nonce": nonce, "prompt": "select_account",
-        })
-        return f"{GOOGLE_AUTH_URL}?{query}", {**session, "oauth": {"state": state, "nonce": nonce, "at": int(time.time())}}
+            "scope": " ".join(scopes), "state": state, "nonce": nonce,
+        }
+        if purpose == "login":
+            params["prompt"] = "select_account"
+        else:
+            params.update(access_type="offline", prompt="consent", include_granted_scopes="true")
+        if login_hint:
+            params["login_hint"] = login_hint
+        attempt = {"state": state, "nonce": nonce, "at": int(time.time()), "para": purpose}
+        return f"{GOOGLE_AUTH_URL}?{urlencode(params)}", {**session, "oauth": attempt}
+
+    @staticmethod
+    def purpose_of(session: dict) -> str:
+        attempt = session.get("oauth")
+        return str(attempt.get("para", "login")) if isinstance(attempt, dict) else "login"
 
     def finish_redirect(self, session: dict, code: str, state: str) -> User:
-        """Google sent the browser back: check it is the attempt this browser started, then trade the code."""
+        """Google sent the browser back from a sign-in: the person, if allowed."""
+        claims, _ = self.finish_oauth(session, code, state)
+        return self._user_from(claims)
+
+    def finish_oauth(self, session: dict, code: str, state: str) -> tuple[dict, dict]:
+        """Checks the answer belongs to the attempt this browser started, trades the code and verifies
+        the ID token. Returns (verified claims, Google's token response)."""
         attempt = session.get("oauth")
         if not isinstance(attempt, dict) or not state or not code:
             raise AuthError(400, "O login veio incompleto. Tente de novo.")
@@ -167,7 +194,7 @@ class AuthSettings:
             raise AuthError(401, "Não consegui confirmar o login com o Google. Tente de novo.")
         if not secrets.compare_digest(str(claims.get("nonce", "")), str(attempt.get("nonce", ""))):
             raise AuthError(401, "Não consegui confirmar o login com o Google. Tente de novo.")
-        return self._user_from(claims)
+        return claims, tokens
 
     def _user_from(self, claims: dict) -> User:
         email = str(claims.get("email", "")).lower()

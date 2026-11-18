@@ -86,3 +86,50 @@ class FakeTranscriber:
         if isinstance(self.text, Exception):
             raise self.text
         return self.text
+
+
+class FakeGoogle:
+    """GoogleApi in memory: one calendar of items and an outbox. Set `fail` to make every call raise it."""
+
+    def __init__(self, items=()):
+        self.items = {item["id"]: dict(item) for item in items}
+        self.sent = []
+        self.calls = []
+        self.fail = None
+        self._next = 1
+
+    def _call(self, name):
+        self.calls.append(name)
+        if self.fail is not None:
+            raise self.fail
+
+    def list_events(self, time_min, time_max):
+        self._call("list")
+        return [dict(item) for item in self.items.values()]
+
+    def insert_event(self, body):
+        self._call("insert")
+        google_id = f"g{self._next}"
+        self._next += 1
+        self.items[google_id] = {**body, "id": google_id, "etag": '"1"', "iCalUID": f"{google_id}@google.com",
+                                 "status": "confirmed"}
+        return dict(self.items[google_id])
+
+    def patch_event(self, event_id, body):
+        from agenda_ia.google_link import GoogleError
+
+        self._call("patch")
+        if event_id not in self.items:
+            raise GoogleError(404, "Not Found")
+        item = self.items[event_id]
+        item.update(body)
+        item["etag"] = f'"{int(item["etag"].strip(chr(34))) + 1}"'
+        return dict(item)
+
+    def delete_event(self, event_id):
+        self._call("delete")
+        self.items.pop(event_id, None)
+
+    def send_mail(self, message):
+        self._call("send")
+        self.sent.append(message)

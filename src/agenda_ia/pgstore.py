@@ -19,7 +19,7 @@ import numpy as np
 
 from .calendar_loader import Event
 from .config import TZ
-from .store import BASE, StoredEvent
+from .store import BASE, GOOGLE, StoredEvent
 from .text import query_terms
 
 
@@ -46,7 +46,21 @@ def schema(dim: int) -> str:
         ) stored,
         unique (dono, chave)
     );
+    alter table eventos add column if not exists google_id text;
+    alter table eventos add column if not exists google_etag text;
     create index if not exists eventos_dono_inicio on eventos (dono, inicio);
+    create index if not exists eventos_google on eventos (dono, google_id) where google_id is not null;
+    -- One row per connected Google account. token: the refresh token, encrypted (google_link.TokenCipher).
+    create table if not exists contas_google (
+        dono text primary key,
+        email text not null,
+        token text not null,
+        escopos text not null,
+        resumo_diario boolean not null default true,
+        ultimo_resumo date,
+        sincronizado_em timestamptz,
+        atualizado_em timestamptz not null default now()
+    );
     create index if not exists eventos_busca on eventos using gin (busca);
     create index if not exists eventos_embedding on eventos using hnsw (embedding vector_cosine_ops);
     """
@@ -60,7 +74,7 @@ def _when(ts: int) -> datetime:
     return datetime.fromtimestamp(ts, TZ)
 
 
-COLUMNS = "id, uid, titulo, inicio, fim, dia_inteiro, local, participantes, notas, origem"
+COLUMNS = "id, uid, titulo, inicio, fim, dia_inteiro, local, participantes, notas, origem, google_id"
 
 
 class PostgresDatabase:
@@ -191,9 +205,79 @@ class PostgresEventStore:
             )
             return cur.rowcount > 0
 
+    def google_links(self, start_ts, end_ts):
+        rows = self._rows(
+            """select id, google_id, google_etag from eventos
+               where dono = %s and google_id is not null and inicio >= %s and inicio < %s""",
+            [self.owner, _when(start_ts), _when(end_ts)],
+        )
+        return {google_id: (int(id_), etag or "") for id_, google_id, etag in rows}
+
+    def set_link(self, event_id, google_id, etag):
+        with self.db.pool.connection() as conn:
+            conn.execute("update eventos set google_id = %s, google_etag = %s where dono = %s and id = %s and origem <> %s",
+                         [google_id, etag, self.owner, event_id, BASE])
+
+    def id_for_key(self, key):
+        rows = self._rows("select id from eventos where dono = %s and chave = %s", [self.owner, key])
+        return int(rows[0][0]) if rows else None
+
+    def forget_google(self):
+        with self.db.pool.connection() as conn, conn.transaction():
+            removed = conn.execute("delete from eventos where dono = %s and origem = %s", [self.owner, GOOGLE]).rowcount
+            conn.execute("update eventos set google_id = null, google_etag = null where dono = %s", [self.owner])
+        return removed
+
+
+class PostgresConnections:
+    """ConnectionStore in the contas_google table, refresh tokens encrypted."""
+
+    _SELECT = "select dono, email, token, escopos, resumo_diario, ultimo_resumo, sincronizado_em from contas_google"
+
+    def __init__(self, db: PostgresDatabase, cipher):
+        self.db, self.cipher = db, cipher
+
+    def _read(self, row: tuple):
+        from .google_link import Connection
+
+        owner, email, token, scopes, daily, last_daily, synced_at = row
+        try:
+            refresh_token = self.cipher.decrypt(token)
+        except ValueError:
+            return None  # encrypted with another key (the session secret changed): connect again
+        return Connection(owner, email, refresh_token, frozenset(scopes.split()), daily, last_daily,
+                          synced_at.astimezone(TZ) if synced_at else None)
+
+    def get(self, owner):
+        with self.db.pool.connection() as conn:
+            row = conn.execute(f"{self._SELECT} where dono = %s", [owner]).fetchone()
+        return self._read(row) if row else None
+
+    def save(self, connection):
+        with self.db.pool.connection() as conn:
+            conn.execute(
+                """insert into contas_google (dono, email, token, escopos, resumo_diario, ultimo_resumo, sincronizado_em)
+                   values (%s, %s, %s, %s, %s, %s, %s)
+                   on conflict (dono) do update set email = excluded.email, token = excluded.token,
+                       escopos = excluded.escopos, resumo_diario = excluded.resumo_diario,
+                       ultimo_resumo = excluded.ultimo_resumo, sincronizado_em = excluded.sincronizado_em,
+                       atualizado_em = now()""",
+                [connection.owner, connection.email, self.cipher.encrypt(connection.refresh_token),
+                 " ".join(sorted(connection.scopes)), connection.daily, connection.last_daily, connection.synced_at],
+            )
+
+    def delete(self, owner):
+        with self.db.pool.connection() as conn:
+            conn.execute("delete from contas_google where dono = %s", [owner])
+
+    def daily(self):
+        with self.db.pool.connection() as conn:
+            rows = conn.execute(f"{self._SELECT} where resumo_diario").fetchall()
+        return [c for c in (self._read(row) for row in rows) if c is not None]
+
 
 def _to_stored(row: tuple) -> StoredEvent:
-    id_, uid, title, start, end, all_day, location, attendees, notes, origin = row
+    id_, uid, title, start, end, all_day, location, attendees, notes, origin, google_id = row
     event = Event(
         uid=uid,
         title=title,
@@ -204,4 +288,4 @@ def _to_stored(row: tuple) -> StoredEvent:
         attendees=tuple(a for a in attendees.split("; ") if a),
         description=notes,
     )
-    return StoredEvent(id=int(id_), event=event, origin=origin)
+    return StoredEvent(id=int(id_), event=event, origin=origin, google_id=google_id)

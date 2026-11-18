@@ -10,6 +10,8 @@
 #   GOOGLE_CLIENT_ID  ID do cliente OAuth do login com Google; se vier vazio, o serviço mantém o atual
 #   AGENDA_IA_URL     endereço público (ex.: https://agenda-ia.web.app), usado no retorno do login;
 #                     se vier vazio, o serviço mantém o atual
+#
+# O e-mail das 8h precisa também do agendador: depois deste script, rode bash deploy/agendador.sh.
 set -euo pipefail
 
 PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
@@ -24,6 +26,7 @@ SESSION_SECRET="agenda-ia-sessao"
 ALLOWED_SECRET="agenda-ia-permitidos"
 DB_SECRET="agenda-ia-banco"  # optional: Postgres connection string (Neon); without it the private agenda lives in memory
 OAUTH_SECRET="agenda-ia-google-segredo"  # optional: the OAuth client's secret; turns on the redirect sign-in (iPhone app)
+SCHEDULER_SA="agenda-ia-agendador@$PROJECT.iam.gserviceaccount.com"  # the only caller of /api/tarefas (deploy/agendador.sh)
 
 if [ -z "$PROJECT" ]; then
   echo "Defina o projeto antes: gcloud config set project ID_DO_PROJETO" >&2
@@ -34,9 +37,11 @@ echo "Projeto: $PROJECT | região: $REGION | serviço: $SERVICE"
 secret_exists() { gcloud secrets describe "$1" --project "$PROJECT" >/dev/null 2>&1; }
 create_secret() { gcloud secrets create "$1" --project "$PROJECT" --replication-policy=automatic --data-file=- >/dev/null; }
 
-echo "1/5 Ativando as APIs (Cloud Run, Cloud Build, Artifact Registry, Secret Manager)..."
+echo "1/5 Ativando as APIs (Cloud Run, Cloud Build, Artifact Registry, Secret Manager, Google Agenda, Gmail)..."
+# Calendar e Gmail: as chamadas que o app faz em nome de quem conectar a conta (sem custo).
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com \
-  artifactregistry.googleapis.com secretmanager.googleapis.com --project "$PROJECT"
+  artifactregistry.googleapis.com secretmanager.googleapis.com \
+  calendar-json.googleapis.com gmail.googleapis.com --project "$PROJECT"
 
 echo "2/5 Segredos..."
 if secret_exists "$GROQ_SECRET"; then
@@ -109,14 +114,16 @@ if [ "${NEW_BUILD_SA:-0}" = 1 ]; then
 fi
 
 echo "5/5 Build e deploy (leva de 5 a 10 minutos)..."
-EXTRA=()
+# One --update-env-vars list: variables not named here keep their current value in the service.
+ENV_VARS="AGENDA_IA_AGENDADOR=$SCHEDULER_SA"
 if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # Public value (it goes to the browser); only changed when passed, otherwise the service keeps it.
-  EXTRA+=(--update-env-vars "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID")
+  ENV_VARS="$ENV_VARS,GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"
 fi
 if [ -n "${AGENDA_IA_URL:-}" ]; then
-  EXTRA+=(--update-env-vars "AGENDA_IA_URL=$AGENDA_IA_URL")
+  ENV_VARS="$ENV_VARS,AGENDA_IA_URL=$AGENDA_IA_URL"
 fi
+EXTRA=(--update-env-vars "$ENV_VARS")
 # min-instances 0: desliga quando ninguém usa (custo zero parado).
 # max-instances 1: teto de gasto, mesmo sob abuso; a API ainda limita 20 perguntas por visitante.
 gcloud run deploy "$SERVICE" --project "$PROJECT" --region "$REGION" --source . \

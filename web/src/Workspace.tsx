@@ -4,13 +4,28 @@ import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
-import { addDraft, ApiError, askQuestion, deleteEvent, getAgenda, getStatus, importIcs, transcribeAudio } from './api'
+import {
+  addDraft,
+  ApiError,
+  askQuestion,
+  deleteEvent,
+  disconnectGoogle,
+  getAgenda,
+  getGoogle,
+  getStatus,
+  importIcs,
+  sendSummaryNow,
+  setDailyMail,
+  syncGoogle,
+  transcribeAudio,
+} from './api'
 import { AgendaPanel } from './components/AgendaPanel'
+import { GoogleBar } from './components/GoogleBar'
 import { Chat, type ChatMessage, type NoteHandlers } from './components/Chat'
 import { DetailsPanel } from './components/DetailsPanel'
 import { EventForm } from './components/EventForm'
 import { canRecord, type Recording } from '@/lib/recorder'
-import type { AgendaEvent, AskMode, Draft, Me, Space, Status } from './types'
+import type { AgendaEvent, AskMode, Draft, GoogleStatus, Me, Space, Status } from './types'
 
 type Tab = 'detalhes' | 'agenda'
 
@@ -26,6 +41,29 @@ const DEMO_IDEAS = [
 ]
 
 const OWN_IDEAS = ['O que tenho amanhã?', 'Como está a minha semana?', 'Qual o meu próximo compromisso?']
+
+// What came back from Google's consent page (the server sends /?google=...#minha).
+const GOOGLE_RETURN: Record<string, string> = {
+  conectado: 'google agenda conectado. trazendo os seus compromissos…',
+  cancelado: 'a conexão com o google foi cancelada.',
+  falhou: 'não consegui conectar o google agora. tente de novo.',
+  'outra-conta': 'conecte com a mesma conta google que você usou para entrar.',
+  'sem-permissao': 'o google não liberou a agenda nem o e-mail. na tela do google, deixe as opções marcadas.',
+  indisponivel: 'a conexão com o google não está configurada neste servidor.',
+  limite: 'muitas tentativas seguidas. tente de novo em alguns minutos.',
+}
+const SYNC_EVERY_MS = 5 * 60 * 1000 // opening the agenda syncs with Google if the last sync is older than this
+
+function googleReturnFromUrl(): string | null {
+  const code = new URLSearchParams(window.location.search).get('google')
+  if (!code) return null
+  window.history.replaceState(null, '', window.location.pathname + window.location.hash) // read once
+  return GOOGLE_RETURN[code] ?? GOOGLE_RETURN.falhou
+}
+
+function plural(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
 
 interface Props {
   space: Space
@@ -55,7 +93,9 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [formOpen, setFormOpen] = useState(false)
   const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
   const [formEditing, setFormEditing] = useState<{ event: AgendaEvent; messageId: number | null } | null>(null)
-  const [notice, setNotice] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(googleReturnFromUrl)
+  const [google, setGoogle] = useState<GoogleStatus | null>(null)
+  const [googleBusy, setGoogleBusy] = useState<string | null>(null) // what the Google bar is doing now
   const nextId = useRef(1)
   const fileRef = useRef<HTMLInputElement>(null)
 
@@ -78,6 +118,8 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
 
   function handleError(error: unknown): string {
     if (error instanceof ApiError && error.status === 401) onSessionLost()
+    // 409 from a write can mean the Google access was revoked: show the bar's "connect" again.
+    if (error instanceof ApiError && error.status === 409 && space === 'minha') void getGoogle().then(setGoogle, () => undefined)
     return error instanceof Error ? error.message : String(error)
   }
 
@@ -92,6 +134,75 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   }
 
   useEffect(load, [space])
+
+  // The private agenda follows Google Calendar: on opening, sync if the last sync is not recent.
+  useEffect(() => {
+    if (space !== 'minha') return
+    getGoogle()
+      .then((g) => {
+        setGoogle(g)
+        const last = g.sincronizado_em ? new Date(g.sincronizado_em).getTime() : 0
+        if (g.conectado && g.agenda && Date.now() - last > SYNC_EVERY_MS) void syncNow(true)
+      })
+      .catch(() => setGoogle(null)) // the bar just stays hidden
+  }, [space])
+
+  /** quiet: an automatic sync only speaks up when something changed. */
+  async function syncNow(quiet = false) {
+    setGoogleBusy('sincronizando…')
+    try {
+      const r = await syncGoogle()
+      const changes = [
+        r.novos && plural(r.novos, 'novo'),
+        r.atualizados && plural(r.atualizados, 'alterado'),
+        r.apagados && plural(r.apagados, 'apagado'),
+      ].filter(Boolean)
+      if (changes.length > 0 || !quiet) setNotice(`google agenda: ${changes.length ? changes.join(', ') : 'nada novo'}.`)
+      if (changes.length > 0) load()
+      setGoogle(await getGoogle())
+    } catch (error) {
+      if (!quiet || !(error instanceof ApiError && error.status === 429)) setNotice(handleError(error))
+    } finally {
+      setGoogleBusy(null)
+    }
+  }
+
+  async function toggleDailyMail(on: boolean) {
+    setGoogleBusy('salvando…')
+    try {
+      setGoogle(await setDailyMail(on))
+      setNotice(on ? 'e-mail das 8h ligado.' : 'e-mail das 8h desligado.')
+    } catch (error) {
+      setNotice(handleError(error))
+    } finally {
+      setGoogleBusy(null)
+    }
+  }
+
+  async function sendMailNow() {
+    setGoogleBusy('enviando…')
+    try {
+      const r = await sendSummaryNow()
+      setNotice(`e-mail enviado para ${r.enviado_para} com ${r.compromissos === 0 ? 'o dia livre' : plural(r.compromissos, 'compromisso')} de hoje.`)
+    } catch (error) {
+      setNotice(handleError(error))
+    } finally {
+      setGoogleBusy(null)
+    }
+  }
+
+  async function disconnect() {
+    setGoogleBusy('desconectando…')
+    try {
+      setGoogle(await disconnectGoogle())
+      setNotice('google desconectado. o que veio de lá saiu desta agenda e continua no seu google agenda.')
+      load()
+    } catch (error) {
+      setNotice(handleError(error))
+    } finally {
+      setGoogleBusy(null)
+    }
+  }
 
   /** echo: false when the same message is sent again with another mode (no repeated line on the page). */
   async function send(question: string, mode: AskMode = 'auto', echo = true) {
@@ -376,8 +487,9 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             emptyNote={
               emptyOwn ? (
                 <p className="font-hand text-[1.4rem] leading-[var(--line)] text-primary">
-                  sua agenda ainda está vazia. importe o .ics do Google Agenda (configurações → importar e exportar) ou
-                  anote um compromisso.
+                  {google?.disponivel && !google.conectado
+                    ? 'sua agenda ainda está vazia. conecte o google agenda (na página da agenda), importe um .ics ou anote um compromisso.'
+                    : 'sua agenda ainda está vazia. importe o .ics do Google Agenda (configurações → importar e exportar) ou anote um compromisso.'}
                 </p>
               ) : null
             }
@@ -422,15 +534,27 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
           <TabsContent value="detalhes" className="paper-plain min-h-0 flex-1">
             <DetailsPanel answer={selectedAnswer} onShowEvent={showEvent} />
           </TabsContent>
-          <TabsContent value="agenda" className="min-h-0 flex-1">
-            <AgendaPanel
-              events={agenda}
-              loaded={status !== null}
-              citedIds={citedIds}
-              focusedEventId={focusedEventId}
-              onEdit={(event) => openEdit(event)}
-              onDelete={remove}
-            />
+          <TabsContent value="agenda" className="flex min-h-0 flex-1 flex-col">
+            {!isDemo && (
+              <GoogleBar
+                status={google}
+                busy={googleBusy}
+                onSync={() => void syncNow()}
+                onDailyMail={(on) => void toggleDailyMail(on)}
+                onSendNow={() => void sendMailNow()}
+                onDisconnect={() => void disconnect()}
+              />
+            )}
+            <div className="min-h-0 flex-1">
+              <AgendaPanel
+                events={agenda}
+                loaded={status !== null}
+                citedIds={citedIds}
+                focusedEventId={focusedEventId}
+                onEdit={(event) => openEdit(event)}
+                onDelete={remove}
+              />
+            </div>
           </TabsContent>
         </Tabs>
       </main>

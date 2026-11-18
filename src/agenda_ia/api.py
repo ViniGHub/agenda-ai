@@ -19,12 +19,19 @@ time comes back as a form to complete. AnswerOut.acao says which one happened.
 Voice messages: .../transcrever takes the recorded audio (raw body, Content-Type audio/*) and
 returns the text; the page then sends that text to .../perguntar like a typed message.
 
+Google Calendar and Gmail (private workspace only, see google_link.py and google_sync.py):
+  /api/minha/google/conectar   goes to Google's consent page and back (same return address as the login)
+  /api/minha/google/...        status, sync, the 8 o'clock e-mail on/off, send it now, disconnect
+  /api/tarefas/resumo-diario   called by Cloud Scheduler at 08:00 with a Google-signed OIDC token
+Once connected, writes in the private agenda go to Google Calendar first.
+
 Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into an in-memory private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import os
 import secrets
@@ -32,7 +39,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict, defaultdict, deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time  # the module name "time" is taken by the clock below
@@ -50,11 +57,17 @@ from .assistant import Assistant
 from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, REDIRECT_PATH, SESSION_SECONDS, AuthError, AuthSettings, User
 from .calendar_loader import format_when, load_events
 from .config import ROOT, TZ
+from .daily_email import SEND_HOUR, compose, message, todays_events
 from .drafting import NoEventError, Suggestion, draft_from_text, explicit_request
 from .editing import MAX_IMPORT_CHARS, EventDraft, ImportError_, import_events
+from .google_link import (CALENDAR_SCOPE, CONNECT_SCOPES, GMAIL_SEND_SCOPE, Connection, GoogleAccessLost,
+                          GoogleApi, GoogleError, GoogleService)
+from .google_sync import push_new, push_update, sync
 from .llm import LLMError, UnavailableModel
 from .speech import AUDIO_TYPES, Transcriber, UnavailableTranscriber
 from .store import BASE, CREATED, IMPORTED, SqliteEventStore, StoredEvent
+
+log = logging.getLogger(__name__)
 
 WEB_DIST = ROOT / "web" / "dist"
 mimetypes.add_type("application/manifest+json", ".webmanifest")  # the installable app's manifest
@@ -64,6 +77,7 @@ DEMO_MAX_SESSIONS = 200
 MAX_EVENTS_PER_AGENDA = 3_000
 MAX_AUDIO_BYTES = 2_000_000  # a minute of speech is ~250 KB in Opus and ~1 MB in AAC
 MIN_AUDIO_BYTES = 500
+TASKS_AUDIENCE = "agenda-ia-tarefas"  # the audience Cloud Scheduler puts in its OIDC token (deploy/agendador.sh)
 
 
 # ---------- contract ----------
@@ -78,7 +92,8 @@ class EventOut(BaseModel):
     local: str
     participantes: list[str]
     notas: str
-    origem: str  # "base" (part of the agenda), "cadastro" (added by the person) or "importado"
+    origem: str  # "base" (part of the agenda), "cadastro" (added by the person), "importado" or "google"
+    google: bool = False  # also in the person's Google Calendar
 
 
 class DetailsOut(BaseModel):
@@ -183,6 +198,38 @@ class ImportOut(BaseModel):
     importados: int  # new ones (repeats of earlier imports are skipped)
 
 
+class GoogleOut(BaseModel):
+    disponivel: bool  # the server can connect Google accounts
+    conectado: bool
+    email: str | None = None
+    agenda: bool = False  # allowed to read and write Google Calendar
+    gmail: bool = False  # allowed to send e-mail
+    resumo_diario: bool = False  # the 8 o'clock e-mail is on
+    resumo_hora: str = SEND_HOUR
+    sincronizado_em: datetime | None = None
+
+
+class GoogleSettingsIn(BaseModel):
+    resumo_diario: bool
+
+
+class SyncOut(BaseModel):
+    novos: int
+    atualizados: int
+    apagados: int
+    sincronizado_em: datetime
+
+
+class SummaryOut(BaseModel):
+    enviado_para: str
+    compromissos: int
+
+
+class TaskOut(BaseModel):
+    enviados: int
+    falhas: int
+
+
 def _clock(value: dt_time | None) -> str | None:
     return value.strftime("%H:%M") if value else None
 
@@ -207,6 +254,7 @@ def event_out(stored: StoredEvent) -> EventOut:
     return EventOut(
         id=stored.id, titulo=e.title, inicio=e.start, fim=e.end, dia_inteiro=e.all_day, quando=format_when(e),
         local=e.location, participantes=list(e.attendees), notas=e.description, origem=stored.origin,
+        google=stored.google_id is not None,
     )
 
 
@@ -236,6 +284,7 @@ class AppState:
     # LLM quota (tokens per minute) is shared by every workspace anyway.
     lock: threading.Lock = field(default_factory=threading.Lock)
     transcriber: Transcriber = field(default_factory=UnavailableTranscriber)
+    google: GoogleService | None = None  # None: the server has no OAuth client secret
 
     def private_for(self, user: User) -> Workspace:
         key = user.sub or user.email
@@ -294,6 +343,7 @@ def load_state() -> AppState:
     sample_path.write_bytes(build_sample(today).to_ical())
     demo = memory_workspace(sample_path, "exemplo")
 
+    db = None
     if os.getenv("DATABASE_URL"):
         from .pgstore import PostgresDatabase
 
@@ -309,7 +359,24 @@ def load_state() -> AppState:
         def new_private(user: User) -> Workspace:
             return memory_workspace(own_ics, "arquivo" if own_ics else "privada")
 
-    return AppState(demo, llm_model, new_private, transcriber=transcriber)
+    return AppState(demo, llm_model, new_private, transcriber=transcriber, google=google_service(db))
+
+
+def google_service(db) -> GoogleService | None:
+    """Connections in Postgres (tokens encrypted) when there is a database, otherwise in memory."""
+    from .google_link import MemoryConnections, RestGoogle, TokenCipher
+
+    client_id, client_secret = os.getenv("GOOGLE_CLIENT_ID"), os.getenv("GOOGLE_CLIENT_SECRET")
+    if not (client_id and client_secret):
+        return None
+    secret = os.getenv("AGENDA_IA_SESSAO_SEGREDO")
+    if db is not None and secret:
+        from .pgstore import PostgresConnections
+
+        connections = PostgresConnections(db, TokenCipher(secret))
+    else:
+        connections = MemoryConnections()
+    return GoogleService(connections, lambda token: RestGoogle(token, client_id, client_secret))
 
 
 class RateLimiter:
@@ -352,6 +419,8 @@ def create_app(
     write_limiter = RateLimiter(int(os.getenv("AGENDA_IA_LIMITE_ESCRITA", "30")), 600)
     login_limiter = RateLimiter(10, 600)
     audio_limiter = RateLimiter(int(os.getenv("AGENDA_IA_LIMITE_AUDIO", "15")), 600)
+    sync_limiter = RateLimiter(10, 600)  # per account
+    summary_limiter = RateLimiter(5, 600)  # "send it now", per account
     auth = auth or AuthSettings.from_env()
 
     @asynccontextmanager
@@ -359,7 +428,7 @@ def create_app(
         app.state.agenda = load()
         yield
 
-    app = FastAPI(title="agenda-ia", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="agenda-ia", version="0.6.0", lifespan=lifespan)
 
     @app.middleware("http")
     async def cache_rules(request: Request, call_next):
@@ -406,6 +475,123 @@ def create_app(
         if not write_limiter.allow(client_id(request)):
             raise HTTPException(429, "Muitas alterações seguidas. Tente de novo em alguns minutos.")
 
+    def owner_of(user: User) -> str:
+        return user.sub or user.email  # the same key as the private agenda
+
+    # ----- Google -----
+
+    def google_calendar(s: AppState, owner: str | None) -> GoogleApi | None:
+        """Where a write must go first: the person's Google Calendar, when connected with calendar access."""
+        return s.google.calendar_for(owner) if s.google is not None and owner else None
+
+    @contextmanager
+    def google_errors(s: AppState, owner: str):
+        try:
+            yield
+        except GoogleAccessLost:
+            if s.google is not None:
+                s.google.forget(owner)  # useless now; the page offers to connect again
+            raise HTTPException(409, "O acesso ao Google Agenda foi desfeito. Conecte de novo.")
+        except GoogleError as error:
+            if error.status == 403:
+                raise HTTPException(403, "O Google Agenda recusou essa alteração. Se o compromisso é de outra pessoa, altere por lá.")
+            raise HTTPException(502, "Não consegui falar com o Google Agenda agora. Tente de novo.")
+
+    def run_sync(s: AppState, ws: Workspace, connection: Connection):
+        api = s.google.api(connection)
+        with s.lock, google_errors(s, connection.owner):
+            report = sync(ws.store, ws.assistant.embedder, api, ws.first_day, ws.last_day)
+        now = datetime.now(TZ)
+        s.google.update(connection.owner, synced_at=now)
+        return report, now
+
+    def send_summary(s: AppState, connection: Connection, day: date, mark: bool) -> int:
+        """Today's appointments to the account's own inbox. Returns how many there were."""
+        with s.lock:
+            ws = s.private_for(User(email=connection.email, name="", sub=connection.owner))
+        if connection.calendar:
+            try:
+                run_sync(s, ws, connection)
+            except HTTPException as error:
+                if error.status_code == 409:
+                    raise  # access lost: the e-mail cannot go either
+                log.warning("resumo: sincronização falhou (%s); usando a cópia local", error.detail)
+        with s.lock:
+            events = todays_events(ws.store, day)
+        subject, text, page = compose(events, day, auth.base_url)
+        with google_errors(s, connection.owner):
+            s.google.api(connection).send_mail(message(connection.email, subject, text, page))
+        if mark:
+            s.google.update(connection.owner, last_daily=day)
+        return len(events)
+
+    def google_out(s: AppState, user: User) -> GoogleOut:
+        if s.google is None or not auth.redirect_enabled:
+            return GoogleOut(disponivel=False, conectado=False)
+        c = s.google.connection(owner_of(user))
+        if c is None:
+            return GoogleOut(disponivel=True, conectado=False)
+        return GoogleOut(disponivel=True, conectado=True, email=c.email, agenda=c.calendar, gmail=c.mail,
+                         resumo_diario=c.daily and c.mail, sincronizado_em=c.synced_at)
+
+    def connected(s: AppState, user: User) -> Connection:
+        if s.google is None:
+            raise HTTPException(503, "A conexão com o Google não está configurada neste servidor.")
+        connection = s.google.connection(owner_of(user))
+        if connection is None:
+            raise HTTPException(409, "Conecte o Google Agenda primeiro.")
+        return connection
+
+    def google_connected(request: Request, session: dict, code: str, state_: str, error: str) -> RedirectResponse:
+        """The way back from Google's consent page (purpose "agenda")."""
+        s = state(request)
+        user = auth.user_in(session)
+        if user is None:  # signed out in the meantime
+            session.pop("oauth", None)
+            response = RedirectResponse("/", status_code=302)
+            save_session(response, session)
+            return response
+        if error:
+            outcome = "cancelado"
+        elif s.google is None:
+            outcome = "indisponivel"
+        else:
+            try:
+                claims, tokens = auth.finish_oauth(session, code, state_)
+            except AuthError:
+                outcome = "falhou"
+            else:
+                granted = frozenset(str(tokens.get("scope", "")).split()) & {CALENDAR_SCOPE, GMAIL_SEND_SCOPE}
+                refresh_token = str(tokens.get("refresh_token") or "")
+                if str(claims.get("sub", "")) != user.sub:
+                    outcome = "outra-conta"  # the agenda belongs to the account that signed in
+                elif not refresh_token:
+                    outcome = "falhou"
+                elif not granted:
+                    outcome = "sem-permissao"
+                else:
+                    s.google.connect(owner_of(user), str(claims.get("email") or user.email).lower(), refresh_token, granted)
+                    outcome = "conectado"
+        session.pop("oauth", None)
+        response = RedirectResponse(f"/?google={outcome}#minha", status_code=302)
+        save_session(response, session)
+        return response
+
+    def check_scheduler(request: Request) -> None:
+        """Only Cloud Scheduler may run tasks: a Google-signed OIDC token for our service account."""
+        expected = os.getenv("AGENDA_IA_AGENDADOR", "").strip().lower()
+        if not expected:
+            raise HTTPException(503, "As tarefas agendadas não estão configuradas.")
+        header = request.headers.get("authorization", "")
+        if not header.lower().startswith("bearer "):
+            raise HTTPException(401, "Falta o token.")
+        try:
+            claims = auth.verifier(header[7:].strip(), TASKS_AUDIENCE)
+        except ValueError:
+            raise HTTPException(401, "Token inválido.")
+        if str(claims.get("email", "")).lower() != expected or not claims.get("email_verified"):
+            raise HTTPException(403, "Quem chamou não é o agendador.")
+
     # ----- shared handlers -----
 
     def status_of(s: AppState, ws: Workspace) -> StatusOut:
@@ -420,8 +606,9 @@ def create_app(
             return [event_out(e) for e in ws.store.events_between(None, None, limit=100_000)]
 
     def answer_in(s: AppState, ws: Workspace, body: QuestionIn, request: Request,
-                  saving_workspace: Callable[[], Workspace]) -> AnswerOut:
-        """saving_workspace: where a new appointment goes (the demo makes the visitor's copy only then)."""
+                  saving_workspace: Callable[[], Workspace], owner: str | None = None) -> AnswerOut:
+        """saving_workspace: where a new appointment goes (the demo makes the visitor's copy only then).
+        owner: set in the private agenda, whose writes may go to Google Calendar."""
         if not limiter.allow(client_id(request)):
             raise HTTPException(429, "Limite de perguntas atingido. Tente de novo em alguns minutos.")
         question = body.pergunta.strip()
@@ -430,7 +617,7 @@ def create_app(
         text, action = r.answer.text, None
         if r.suggestion is not None:
             text, action = note_from_chat(s, r.suggestion, question, request, saving_workspace,
-                                          may_save=body.modo == "auto")
+                                          may_save=body.modo == "auto", owner=owner)
         return AnswerOut(
             resposta=text,
             encontrou=r.answer.found,
@@ -444,7 +631,8 @@ def create_app(
         )
 
     def note_from_chat(s: AppState, suggestion: Suggestion, message: str, request: Request,
-                       saving_workspace: Callable[[], Workspace], may_save: bool) -> tuple[str, ActionOut]:
+                       saving_workspace: Callable[[], Workspace], may_save: bool,
+                       owner: str | None = None) -> tuple[str, ActionOut]:
         draft = draft_out(suggestion)
         if suggestion.missing:
             return (f"Para anotar \"{suggestion.titulo}\", falta {suggestion.missing_text()}.",
@@ -456,7 +644,7 @@ def create_app(
                     ActionOut(tipo="completar", rascunho=draft))
         # Saved straight away only when the person clearly ordered it, and within the write limit.
         if may_save and explicit_request(message) and write_limiter.allow(client_id(request)):
-            saved = add_to(s, saving_workspace(), event)
+            saved = add_to(s, saving_workspace(), event, owner)
             where = f" ({saved.local})" if saved.local else ""
             return (f"Anotei na agenda: {saved.titulo}, {saved.quando}{where}.",
                     ActionOut(tipo="anotado", rascunho=draft, evento=saved))
@@ -504,18 +692,23 @@ def create_app(
             raise HTTPException(422, "Não entendi o áudio. Fale mais perto do microfone e tente de novo.")
         return TranscriptOut(texto=text[:MAX_QUESTION_CHARS])
 
-    def add_to(s: AppState, ws: Workspace, draft: EventDraft) -> EventOut:
+    def add_to(s: AppState, ws: Workspace, draft: EventDraft, owner: str | None = None) -> EventOut:
         event = draft.to_event()
+        api = google_calendar(s, owner)
         with s.lock:
             if ws.store.count() >= MAX_EVENTS_PER_AGENDA:
                 raise HTTPException(409, "A agenda atingiu o limite de compromissos.")
-            vector = ws.assistant.embedder.passages([event.search_text()])
-            added = ws.store.add([event], vector, CREATED)
+            if api is not None and owner:
+                with google_errors(s, owner):
+                    added = push_new(ws.store, ws.assistant.embedder, api, event, CREATED)
+            else:
+                vector = ws.assistant.embedder.passages([event.search_text()])
+                added = ws.store.add([event], vector, CREATED)
         if not added:
             raise HTTPException(409, "Esse compromisso já existe.")
         return event_out(added[0])
 
-    def update_in(s: AppState, ws: Workspace, event_id: int, draft: EventDraft) -> EventOut:
+    def update_in(s: AppState, ws: Workspace, event_id: int, draft: EventDraft, owner: str | None = None) -> EventOut:
         missing = HTTPException(404, "Compromisso não encontrado, ou ele faz parte da agenda original.")
         with s.lock:
             current = ws.store.get_events([event_id]).get(event_id)
@@ -523,13 +716,23 @@ def create_app(
                 raise missing
             event = replace(draft.to_event(), uid=current.event.uid)  # same identity, new fields
             vector = ws.assistant.embedder.passages([event.search_text()])[0]
-            updated = ws.store.update(event_id, event, vector)
+            api = google_calendar(s, owner) if current.google_id else None
+            if api is not None and owner:
+                with google_errors(s, owner):
+                    updated = push_update(ws.store, api, current, event, vector)
+            else:
+                updated = ws.store.update(event_id, event, vector)
         if updated is None:
             raise missing
         return event_out(updated)
 
-    def delete_from(s: AppState, ws: Workspace, event_id: int) -> dict:
+    def delete_from(s: AppState, ws: Workspace, event_id: int, owner: str | None = None) -> dict:
         with s.lock:
+            current = ws.store.get_events([event_id]).get(event_id)
+            api = google_calendar(s, owner) if current is not None and current.google_id else None
+            if api is not None and owner and current is not None and current.origin != BASE:
+                with google_errors(s, owner):
+                    api.delete_event(str(current.google_id))
             if not ws.store.delete(event_id):
                 raise HTTPException(404, "Compromisso não encontrado, ou ele faz parte da agenda original.")
         return {"apagado": event_id}
@@ -557,6 +760,8 @@ def create_app(
     @app.get(REDIRECT_PATH)
     def google_return(request: Request, code: str = "", state: str = "", error: str = "") -> RedirectResponse:
         session = session_of(request)
+        if auth.purpose_of(session) == "agenda":
+            return google_connected(request, session, code, state, error)
         if error:  # the person closed or refused Google's page
             reason = "cancelado"
         else:
@@ -661,7 +866,7 @@ def create_app(
     @app.post("/api/minha/perguntar", response_model=AnswerOut, dependencies=[Depends(same_site_only)])
     def own_ask(body: QuestionIn, request: Request, user: User = Depends(require_user)) -> AnswerOut:
         ws = private_workspace(request, user)
-        return answer_in(state(request), ws, body, request, lambda: ws)
+        return answer_in(state(request), ws, body, request, lambda: ws, owner_of(user))
 
     @app.post("/api/minha/interpretar", response_model=SuggestionOut, dependencies=[Depends(same_site_only)])
     def own_interpret(body: SentenceIn, request: Request, user: User = Depends(require_user)) -> SuggestionOut:
@@ -674,16 +879,16 @@ def create_app(
     @app.post("/api/minha/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def own_add(draft: EventDraft, request: Request, user: User = Depends(require_user)) -> EventOut:
-        return add_to(state(request), private_workspace(request, user), draft)
+        return add_to(state(request), private_workspace(request, user), draft, owner_of(user))
 
     @app.put("/api/minha/compromissos/{event_id}", response_model=EventOut,
              dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def own_update(event_id: int, draft: EventDraft, request: Request, user: User = Depends(require_user)) -> EventOut:
-        return update_in(state(request), private_workspace(request, user), event_id, draft)
+        return update_in(state(request), private_workspace(request, user), event_id, draft, owner_of(user))
 
     @app.delete("/api/minha/compromissos/{event_id}", dependencies=[Depends(same_site_only), Depends(limit_writes)])
     def own_delete(event_id: int, request: Request, user: User = Depends(require_user)) -> dict:
-        return delete_from(state(request), private_workspace(request, user), event_id)
+        return delete_from(state(request), private_workspace(request, user), event_id, owner_of(user))
 
     @app.post("/api/minha/importar", response_model=ImportOut,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
@@ -700,6 +905,86 @@ def create_app(
             vectors = ws.assistant.embedder.passages([e.search_text() for e in events]) if events else []
             added = ws.store.add(events, vectors, IMPORTED) if events else []
         return ImportOut(encontrados=len(events), importados=len(added))
+
+    # ----- Google Calendar and the 8 o'clock e-mail (private workspace) -----
+
+    @app.get("/api/minha/google", response_model=GoogleOut)
+    def google_status(request: Request, user: User = Depends(require_user)) -> GoogleOut:
+        return google_out(state(request), user)
+
+    @app.get("/api/minha/google/conectar")
+    def google_connect(request: Request) -> RedirectResponse:
+        """A link, not a fetch: the page goes to Google's consent page and comes back to REDIRECT_PATH."""
+        user = current_user(request)
+        if user is None:
+            return RedirectResponse("/", status_code=302)
+        if state(request).google is None or not auth.redirect_enabled:
+            return RedirectResponse("/?google=indisponivel#minha", status_code=302)
+        if not login_limiter.allow(client_id(request)):
+            return RedirectResponse("/?google=limite#minha", status_code=302)
+        url, session = auth.start_redirect(session_of(request), purpose="agenda", scopes=CONNECT_SCOPES,
+                                           login_hint=user.email)
+        response = RedirectResponse(url, status_code=302)
+        save_session(response, session)
+        return response
+
+    @app.put("/api/minha/google", response_model=GoogleOut, dependencies=[Depends(same_site_only)])
+    def google_settings(body: GoogleSettingsIn, request: Request, user: User = Depends(require_user)) -> GoogleOut:
+        s = state(request)
+        connected(s, user)
+        s.google.update(owner_of(user), daily=body.resumo_diario)
+        return google_out(s, user)
+
+    @app.post("/api/minha/google/sincronizar", response_model=SyncOut, dependencies=[Depends(same_site_only)])
+    def google_sync(request: Request, user: User = Depends(require_user)) -> SyncOut:
+        s = state(request)
+        connection = connected(s, user)
+        if not connection.calendar:
+            raise HTTPException(409, "A conexão não deu acesso à agenda. Conecte de novo e deixe a agenda marcada.")
+        if not sync_limiter.allow(connection.owner):
+            raise HTTPException(429, "Sincronizei há pouco. Tente de novo em alguns minutos.")
+        report, when = run_sync(s, private_workspace(request, user), connection)
+        return SyncOut(novos=report.added, atualizados=report.updated, apagados=report.removed, sincronizado_em=when)
+
+    @app.post("/api/minha/google/resumo", response_model=SummaryOut, dependencies=[Depends(same_site_only)])
+    def google_summary_now(request: Request, user: User = Depends(require_user)) -> SummaryOut:
+        s = state(request)
+        connection = connected(s, user)
+        if not connection.mail:
+            raise HTTPException(409, "A conexão não deu permissão para enviar e-mail. Conecte de novo e deixe o Gmail marcado.")
+        if not summary_limiter.allow(connection.owner):
+            raise HTTPException(429, "Muitos e-mails seguidos. Tente de novo em alguns minutos.")
+        count = send_summary(s, connection, datetime.now(TZ).date(), mark=False)
+        return SummaryOut(enviado_para=connection.email, compromissos=count)
+
+    @app.delete("/api/minha/google", response_model=GoogleOut, dependencies=[Depends(same_site_only)])
+    def google_disconnect(request: Request, user: User = Depends(require_user)) -> GoogleOut:
+        """Events read from Google leave this agenda (they stay in Google); the token is revoked."""
+        s = state(request)
+        if s.google is not None:
+            ws = private_workspace(request, user)
+            with s.lock:
+                ws.store.forget_google()
+            s.google.disconnect(owner_of(user))
+        return google_out(s, user)
+
+    @app.post("/api/tarefas/resumo-diario", response_model=TaskOut)
+    def daily_summary_task(request: Request) -> TaskOut:
+        check_scheduler(request)
+        s = state(request)
+        sent = failed = 0
+        if s.google is not None:
+            day = datetime.now(TZ).date()
+            for connection in s.google.connections.daily():
+                if not connection.mail or connection.last_daily == day:
+                    continue  # no permission, or already sent today (the job retried)
+                try:
+                    send_summary(s, connection, day, mark=True)
+                    sent += 1
+                except HTTPException as error:
+                    failed += 1
+                    log.warning("resumo diário não enviado: %s", error.detail)
+        return TaskOut(enviados=sent, falhas=failed)
 
     if WEB_DIST.is_dir():
         app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

@@ -4,7 +4,7 @@ Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o 
 
 **Demonstração:** https://agenda-ia.web.app (agenda fictícia; depois de um tempo sem uso, o primeiro acesso leva uns 30 a 60 segundos para o servidor acordar)
 
-> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa, também por voz) e importação de `.ics`. Falta: avaliação automática.
+> Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa, também por voz), importação de `.ics`, app instalável no celular, sincronização com o Google Agenda e e-mail com o dia às 8h. Falta: avaliação automática.
 
 A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
 
@@ -53,6 +53,8 @@ web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (
      /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, transcrever,
                      compromissos (criar, editar, apagar)
      /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
+     /api/minha/google/...  conectar o Google Agenda e o Gmail, sincronizar, e-mail das 8h, desconectar
+     /api/tarefas/resumo-diario  chamada pelo Cloud Scheduler às 8h, com token OIDC assinado pelo Google
      /api/login · /api/logout · /api/me · /api/config
 ```
 
@@ -64,6 +66,24 @@ O site pode ser instalado no celular como app: ícone na tela inicial, tela chei
 - **Service worker** ([`vite-plugin-pwa`](https://vite-pwa-org.netlify.app/)): guarda a casca do app (HTML, JS, CSS, fontes), que abre na hora e mostra um aviso em vez de uma página de erro quando não há internet. A API nunca entra no cache: perguntas, agenda e login vão sempre à rede. Quando sai versão nova, o app avisa "nova versão disponível · atualizar".
 - **Layout de app:** no celular, uma página por vez, escolhida numa barra inferior (Conversa, Agenda, Como foi), com espaço para a barra de gestos do iPhone e o microfone maior.
 
+## Google Agenda e e-mail das 8h
+
+Na área privada, a página da agenda oferece **"conectar o Google Agenda"**. Conectado:
+
+- **O que se anota aqui vai para o Google Agenda** (formulário, conversa ou voz), e editar ou apagar aqui faz o mesmo lá. No iPhone, o próprio app do Google Agenda (ou o Calendário com a conta Google) avisa antes de cada compromisso, sem o app precisar de notificações.
+- **O que está no Google Agenda entra nas respostas:** ao abrir a agenda (se a última sincronização tiver mais de 5 minutos), no botão "sincronizar" e antes do e-mail das 8h.
+- **Às 8h chega um e-mail** com os compromissos do dia, enviado do seu Gmail para você mesmo. Dá para desligar ou mandar um agora, para testar.
+
+Como funciona por dentro:
+
+- **Permissões mínimas, pedidas à parte do login.** O login pede só nome e e-mail. Conectar pede `calendar.events` (ver e editar eventos; não mexe em configurações nem em compartilhamento) e `gmail.send` (só enviar; não lê nenhum e-mail). A tela do Google deixa desmarcar qualquer uma, e cada recurso confere a sua. A volta usa o mesmo endereço do login, então o cliente OAuth continua com uma URI de redirecionamento só.
+- **Token de atualização criptografado.** Para mandar o e-mail sem você estar com o app aberto, o servidor guarda o *refresh token* que o Google devolve. Ele fica no Neon cifrado com Fernet (AES + HMAC), com uma chave derivada (HKDF) do segredo da sessão, então uma cópia do banco sozinha não serve para nada. "Desconectar" revoga o token no Google e apaga daqui; se você revogar pelo lado do Google, o app percebe na próxima chamada e oferece conectar de novo.
+- **O Google é a fonte da verdade** ([`google_sync.py`](src/agenda_ia/google_sync.py)). Uma escrita vai primeiro ao Google; se ele recusar, nada muda aqui. A sincronização lê a janela da agenda (60 dias para trás, 120 para frente) e compara a *etag* (a versão) de cada evento: só o que mudou é recalculado no índice, então sincronizar sem novidade custa uma listagem e nenhum embedding. Um evento que já tinha vindo pelo `.ics` do Google é reconhecido pelo identificador e adotado, sem duplicar.
+- **Ninguém recebe convite.** As pessoas de um compromisso são nomes, não e-mails, e viram uma linha "Com: Ana; Bruno" na descrição do evento, que a leitura transforma de volta em nomes ([`google_events.py`](src/agenda_ia/google_events.py)). Toda escrita vai com `sendUpdates=none`.
+- **O e-mail não passa por IA** ([`daily_email.py`](src/agenda_ia/daily_email.py)): é a lista exata do dia, incluindo o que começou antes e ainda está acontecendo (uma viagem), então não tem como inventar compromisso.
+- **Só o agendador dispara o e-mail.** O Cloud Scheduler chama `/api/tarefas/resumo-diario` às 8h (horário de Brasília) com um token OIDC assinado pelo Google, de uma conta de serviço própria e sem nenhum papel. A API confere a assinatura, o público e o e-mail dessa conta. Se o agendador tentar de novo, o e-mail não sai duas vezes: cada conta guarda o dia do último envio.
+- **Sem a biblioteca oficial do Google:** são cinco chamadas HTTPS (listar, criar, alterar e apagar eventos, enviar e-mail) com `requests`, e a imagem não ganha dezenas de MB.
+
 ## Armazenamento
 
 A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/agenda_ia/store.py)), que tem duas implementações:
@@ -71,7 +91,7 @@ A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/a
 - **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa ao cookie de sessão (anônimo, sem login) e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
 - **Postgres com pgvector** ([`pgstore.py`](src/agenda_ia/pgstore.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
 
-Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser editada nem apagada), `cadastro` (anotado no formulário ou na conversa) ou `importado` (veio do `.ics`). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
+Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser editada nem apagada), `cadastro` (anotado no formulário ou na conversa), `importado` (veio do `.ics`) ou `google` (veio do Google Agenda conectado). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
 
 Editar (pela agenda, ou pelo bilhete do que a conversa acabou de anotar) troca os campos e recalcula o vetor e o índice de palavras, então as próximas perguntas já acham a versão nova. O compromisso mantém a identidade: um evento importado e depois editado não volta ao lado da versão editada quando o mesmo `.ics` é importado de novo. O formulário só representa um dia; ao editar algo que ocupa vários dias (uma viagem importada), a tela avisa que ele passará a ocupar só o dia escolhido.
 
@@ -211,6 +231,8 @@ O [`Dockerfile`](Dockerfile) compila o React e roda a API num container só; o m
 3. cria uma conta de serviço que só pode ler esses segredos, e outra só para o build;
 4. compila a imagem no Cloud Build e publica o serviço. Com `GOOGLE_CLIENT_ID=... bash deploy/cloud-run.sh`, liga o login com Google.
 
+O e-mail das 8h precisa ainda de [`deploy/agendador.sh`](deploy/agendador.sh), que cria a conta de serviço do agendador e a tarefa do Cloud Scheduler.
+
 **Endereço limpo:** o Cloud Run sempre dá um endereço com o número do projeto e a região. Na frente dele fica o Firebase Hosting, com `https://agenda-ia.web.app`. A versão publicada no Hosting não tem arquivos, só a regra "todo pedido vai para o Cloud Run", e o script [`deploy/firebase-hosting.sh`](deploy/firebase-hosting.sh) a publica pela API REST do Hosting, sem o Firebase CLI. A API diz ao CDN o que pode guardar: respostas da API nunca, arquivos de `/assets` (com hash no nome) por um ano, e o `index.html` é sempre revalidado. O endereço do Cloud Run continua funcionando.
 
 Configuração pensada para custo zero: escala até zero quando ninguém usa, no máximo 1 instância (teto de gasto mesmo sob abuso) e 20 perguntas por visitante a cada 10 minutos (para não esgotar a cota gratuita do Groq). O preço disso é a partida a frio: depois de um tempo parado, o primeiro acesso leva de 30 a 60 segundos.
@@ -260,4 +282,4 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Anotar pela conversa: pedido explícito anota com desfazer; o que não estiver claro pergunta antes
 - [x] Mensagens de voz: gravar no celular, transcrever (Whisper no Groq) e seguir o mesmo caminho da conversa
 - [x] App instalável no celular (PWA), com login por redirecionamento que funciona no iPhone
-- [ ] Google Agenda e e-mail com os compromissos do dia às 8h
+- [x] Google Agenda nos dois sentidos e e-mail com os compromissos do dia às 8h (Gmail + Cloud Scheduler)

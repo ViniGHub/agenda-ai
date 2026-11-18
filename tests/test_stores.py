@@ -148,3 +148,59 @@ def test_sqlite_clone_is_independent(sample_db, fake_embedder):
     assert copy.keyword_search("show", 5, None, None) == [stored.id]
     assert sample_db.keyword_search("show", 5, None, None) == []
     assert date(2026, 11, 17) in {s.event.start.date() for s in copy.events_between(None, None, 1000)}
+
+
+def test_google_links_follow_each_event(make_store, fake_embedder):
+    from agenda_ia.store import GOOGLE
+
+    store = make_store()
+    [mine] = _add(store, fake_embedder, [_event("Dentista")])
+    [theirs] = _add(store, fake_embedder, [_event("Reunião")], GOOGLE)
+    store.set_link(mine.id, "g-mine", '"1"')
+    store.set_link(theirs.id, "g-theirs", '"7"')
+    day = int(datetime(2026, 11, 20, tzinfo=TZ).timestamp())
+    assert store.google_links(day, day + 86400) == {"g-mine": (mine.id, '"1"'), "g-theirs": (theirs.id, '"7"')}
+    assert store.google_links(day + 86400, day + 2 * 86400) == {}
+    assert store.get_events([mine.id])[mine.id].google_id == "g-mine"
+    assert store.id_for_key(mine.event.key) == mine.id and store.id_for_key("nada") is None
+    assert store.forget_google() == 1  # the event read from Google goes; the one made here stays, unlinked
+    assert [(s.id, s.google_id) for s in store.events_between(None, None)] == [(mine.id, None)]
+
+
+def test_google_connections_are_encrypted_at_rest(fake_embedder):
+    url = os.getenv("TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("TEST_DATABASE_URL não definido")
+    from agenda_ia.google_link import CALENDAR_SCOPE, Connection, TokenCipher
+    from agenda_ia.pgstore import PostgresConnections, PostgresDatabase
+
+    db = PostgresDatabase(url, fake_embedder.dim)
+    owner = f"teste-{uuid.uuid4()}"
+    try:
+        connections = PostgresConnections(db, TokenCipher("segredo"))
+        connections.save(Connection(owner, "eu@example.com", "refresh-secreto", frozenset({CALENDAR_SCOPE})))
+        with db.pool.connection() as conn:
+            stored = conn.execute("select token from contas_google where dono = %s", [owner]).fetchone()[0]
+        assert "refresh-secreto" not in stored
+        back = connections.get(owner)
+        assert back.refresh_token == "refresh-secreto" and back.calendar and not back.mail and back.daily
+        assert owner in [c.owner for c in connections.daily()]
+        assert PostgresConnections(db, TokenCipher("outro-segredo")).get(owner) is None  # another key reads nothing
+        connections.delete(owner)
+        assert connections.get(owner) is None
+    finally:
+        with db.pool.connection() as conn:
+            conn.execute("delete from contas_google where dono = %s", [owner])
+        db.close()
+
+
+def test_token_cipher_round_trip_and_tamper():
+    from agenda_ia.google_link import TokenCipher
+
+    cipher = TokenCipher("segredo")
+    sealed = cipher.encrypt("refresh-1")
+    assert sealed != "refresh-1" and cipher.decrypt(sealed) == "refresh-1"
+    with pytest.raises(ValueError):
+        TokenCipher("outro").decrypt(sealed)
+    with pytest.raises(ValueError):
+        cipher.decrypt(sealed[:-4] + "AAAA")
