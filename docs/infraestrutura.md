@@ -101,7 +101,7 @@ O container escuta na porta que o Cloud Run informa na variável `$PORT` (8080).
 
 - Guarda as imagens prontas no repositório `cloud-run-source-deploy` (criado no primeiro deploy), uma por deploy. Cada imagem tem ~715 MB compactados; as camadas iguais entre imagens (Python, PyTorch, o modelo) são guardadas uma vez só.
 - No console: menu ☰ → Artifact Registry → Repositórios → `cloud-run-source-deploy` → `agenda-ia`. Ou pelo Cloud Run → Revisões: cada revisão mostra o digest da imagem que usa.
-- É o único item que custa algo: a cota gratuita é de 0,5 GB, e cada deploy adiciona uma imagem. Medido em 18/11/2026, sem limpeza: 12 imagens, 8,5 GB, uns US$ 0,80 por mês (US$ 0,10 por GB acima da cota). Ver "Limpeza das imagens antigas" na seção 5.
+- É o único item que custa algo: a cota gratuita é de 0,5 GB, e cada deploy adiciona uma imagem. Medido em 18/11/2026, sem limpeza: 12 imagens, 8,5 GB, uns US$ 0,80 por mês (US$ 0,10 por GB acima da cota). Desde então a limpeza está ligada e guarda só as 2 mais novas (ver "Limpeza das imagens antigas" na seção 5).
 
 ### Secret Manager
 
@@ -319,19 +319,14 @@ gcloud run revisions list --service agenda-ia --region $REGIAO
 gcloud run services update-traffic agenda-ia --region $REGIAO --to-revisions agenda-ia-00002-xxx=100
 ```
 
-**Limpeza das imagens antigas** (para o Artifact Registry não passar da cota gratuita). Salve como `limpeza.json`:
-
-```json
-[
-  { "name": "manter-as-2-mais-novas", "action": { "type": "Keep" }, "mostRecentVersions": { "keepCount": 2 } },
-  { "name": "apagar-as-antigas", "action": { "type": "Delete" }, "condition": { "olderThan": "7d" } }
-]
-```
+**Limpeza das imagens antigas** (para o Artifact Registry ficar perto da cota gratuita): [`deploy/limpar-imagens.sh`](../deploy/limpar-imagens.sh).
 
 ```bash
-gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy --location $REGIAO --policy limpeza.json            # simula
-gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy --location $REGIAO --policy limpeza.json --no-dry-run
+bash deploy/limpar-imagens.sh           # mantém as 2 mais novas
+MANTER=3 bash deploy/limpar-imagens.sh  # ou outra quantidade
 ```
+
+Ele liga no repositório uma regra de limpeza (o Google apaga sozinho, cerca de uma vez por dia, o que não estiver entre as mais novas; regras "Keep" vencem as "Delete") e apaga na hora o que já passou disso. A mais nova é a que está no ar; a anterior permite voltar uma revisão sem build. Revisões mais antigas deixam de poder voltar ao ar. Ligado em 18/11/2026.
 
 **Desmontar tudo** (para parar qualquer cobrança):
 
