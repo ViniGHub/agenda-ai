@@ -107,7 +107,10 @@ def test_private_agenda_is_separate_from_the_demo(client):
 def test_tampered_cookie_is_ignored(client):
     _login(client)
     value = client.cookies.get(COOKIE_NAME)
-    tampered = value[:-1] + ("A" if value[-1] != "A" else "B")  # breaks the signature
+    # Breaks the signature. Not the last character: in base64 its low bits can be padding, and a
+    # change there decodes to the same bytes (the test then failed now and then, by the clock).
+    i = len(value) - 5
+    tampered = value[:i] + ("A" if value[i] != "A" else "B") + value[i + 1:]
     client.cookies.clear()
     client.cookies.set(COOKIE_NAME, tampered)
     assert client.get("/api/minha/status").status_code == 401

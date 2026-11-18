@@ -235,7 +235,7 @@ Ou pelo console: Cloud Run → agenda-ia → Registros.
 
 **Usar** (uma pergunta no site):
 
-1. o navegador abre o endereço do serviço; o Cloud Run termina o HTTPS e, se não houver instância ligada, liga uma (partida a frio);
+1. o navegador abre o endereço do serviço; o Cloud Run termina o HTTPS e, se não houver instância ligada, liga uma (partida a frio). O servidor começa a responder em poucos segundos e carrega o modelo e a agenda de exemplo em segundo plano; enquanto isso, a capa e o login funcionam, a página mostra as etapas (`/api/pronto`) e as rotas que precisam da agenda esperam até 50 s. Um detalhe do Cloud Run: fora de uma requisição, a CPU da instância fica quase parada, então a página mantém sempre uma consulta aberta a `/api/pronto` para o carregamento não emperrar;
 2. a instância lê os segredos, carrega o modelo de embeddings (já dentro da imagem) e monta a agenda fictícia na memória;
 3. o FastAPI entrega o React (`/`) e responde à API (`/api/...`) na mesma origem;
 4. na pergunta, a API chama o Groq duas vezes (entender a pergunta e responder) e confere as citações;

@@ -21,10 +21,12 @@ import {
 } from './api'
 import { AgendaPanel } from './components/AgendaPanel'
 import { GoogleBar } from './components/GoogleBar'
+import { WarmupChecklist } from './components/WarmupChecklist'
 import { Chat, type ChatMessage, type NoteHandlers } from './components/Chat'
 import { DetailsPanel } from './components/DetailsPanel'
 import { EventForm } from './components/EventForm'
 import { canRecord, type Recording } from '@/lib/recorder'
+import type { Warmup } from '@/lib/warmup'
 import type { AgendaEvent, AskMode, Draft, GoogleStatus, Me, Space, Status } from './types'
 
 type Tab = 'detalhes' | 'agenda'
@@ -68,12 +70,13 @@ function plural(n: number, word: string): string {
 interface Props {
   space: Space
   user: Me | null
+  warmup: Warmup // the server's start-up: the agenda loads once it is ready
   onLeave: () => void // back to the cover (demo) or sign out (private)
   onSessionLost: () => void
 }
 
 /** The open notebook: conversation on the left page, how each answer was built on the right. */
-export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
+export function Workspace({ space, user, warmup, onLeave, onSessionLost }: Props) {
   const [status, setStatus] = useState<Status | null>(null)
   const [agenda, setAgenda] = useState<AgendaEvent[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -133,11 +136,14 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       .catch((error) => setLoadError(handleError(error)))
   }
 
-  useEffect(load, [space])
+  // Waits for the server's start-up, so a cold start shows its steps instead of a request hanging.
+  useEffect(() => {
+    if (warmup.ready) load()
+  }, [space, warmup.ready])
 
   // The private agenda follows Google Calendar: on opening, sync if the last sync is not recent.
   useEffect(() => {
-    if (space !== 'minha') return
+    if (space !== 'minha' || !warmup.ready) return
     getGoogle()
       .then((g) => {
         setGoogle(g)
@@ -145,7 +151,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
         if (g.conectado && g.agenda && Date.now() - last > SYNC_EVERY_MS) void syncNow(true)
       })
       .catch(() => setGoogle(null)) // the bar just stays hidden
-  }, [space])
+  }, [space, warmup.ready])
 
   /** quiet: an automatic sync only speaks up when something changed. */
   async function syncNow(quiet = false) {
@@ -483,9 +489,15 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             disabled={!status}
             selectedId={selectedId}
             detailsOpen={tab === 'detalhes'}
-            ideas={isDemo ? DEMO_IDEAS : emptyOwn ? [] : OWN_IDEAS}
+            ideas={!warmup.ready ? [] : isDemo ? DEMO_IDEAS : emptyOwn ? [] : OWN_IDEAS}
             emptyNote={
-              emptyOwn ? (
+              !warmup.ready ? (
+                <WarmupChecklist
+                  warmup={warmup}
+                  title={isDemo ? 'abrindo a agenda fictícia' : 'abrindo a sua agenda'}
+                  className="mb-[calc(var(--line)/2)]"
+                />
+              ) : emptyOwn ? (
                 <p className="font-hand text-[1.4rem] leading-[var(--line)] text-primary">
                   {google?.disponivel && !google.conectado
                     ? 'sua agenda ainda está vazia. conecte o google agenda (na página da agenda), importe um .ics ou anote um compromisso.'

@@ -9,7 +9,9 @@ import type {
   GoogleStatus,
   ImportResult,
   Me,
+  Ready,
   Space,
+  Stage,
   Status,
   Suggestion,
   SummaryResult,
@@ -57,6 +59,8 @@ function errorMessage(detail: unknown): string | null {
 
 const post = <T>(path: string, body: unknown = {}) => request<T>(path, { method: 'POST', body: JSON.stringify(body) })
 
+/** Answers when the server's start-up moves past `known` (a long poll), or at once without it. */
+export const getReady = (known: Stage | '' = '') => request<Ready>(`/api/pronto${known ? `?etapa=${known}` : ''}`)
 export const getConfig = () => request<Config>('/api/config')
 export const getMe = () => request<Me>('/api/me')
 export const login = (credential: string) => post<Me>('/api/login', { credential })

@@ -25,12 +25,18 @@ Google Calendar and Gmail (private workspace only, see google_link.py and google
   /api/tarefas/resumo-diario   called by Cloud Scheduler at 08:00 with a Google-signed OIDC token
 Once connected, writes in the private agenda go to Google Calendar first.
 
+Start-up: the server answers from its first second. Loading the embedding model and indexing the
+demo (30 to 60 s when Cloud Run wakes the container) runs in a background thread; /api/config,
+/api/me and the login do not need it, the other routes wait for it, and /api/pronto tells the page
+which step is running (see Startup).
+
 Locally, AGENDA_ICS=agenda_real/minha.ics loads your real .ics into an in-memory private workspace.
 The response models below are the contract with the front-end; web/src/types.ts mirrors them.
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 import mimetypes
 import os
@@ -157,6 +163,12 @@ class StatusOut(BaseModel):
     agora: datetime
     persistente: bool  # False: what is added here disappears when the server restarts (or, in the demo, in 2 hours)
     audio: bool  # voice messages can be transcribed
+
+
+class ReadyOut(BaseModel):
+    pronto: bool
+    etapa: str  # servidor | modelo | exemplo | banco | pronto | falhou (see Startup)
+    segundos: float  # since this server instance started loading
 
 
 class ConfigOut(BaseModel):
@@ -313,8 +325,9 @@ class AppState:
         return copy, token
 
 
-def load_state() -> AppState:
-    """Loads the model once, indexes the demo agenda in memory and connects to the database if configured."""
+def load_state(progress: Callable[[str], None] = lambda stage: None) -> AppState:
+    """Loads the model once, indexes the demo agenda in memory and connects to the database if configured.
+    progress(stage) reports each step to the page while the server wakes up."""
     from .embeddings import E5Embedder
     from .llm import GroqModel
     from .speech import GroqTranscriber
@@ -322,6 +335,7 @@ def load_state() -> AppState:
 
     today = datetime.now(TZ).date()
     first_day, last_day = today - timedelta(days=60), today + timedelta(days=120)
+    progress("modelo")
     embedder = E5Embedder()
     try:
         model = GroqModel()
@@ -339,6 +353,7 @@ def load_state() -> AppState:
         store = SqliteEventStore.in_memory(events, vectors, embedder.dim)
         return Workspace(Assistant(store, embedder, model), origin, first_day, last_day)
 
+    progress("exemplo")
     sample_path = Path(tempfile.gettempdir()) / "agenda_ia_exemplo.ics"
     sample_path.write_bytes(build_sample(today).to_ical())
     demo = memory_workspace(sample_path, "exemplo")
@@ -347,6 +362,7 @@ def load_state() -> AppState:
     if os.getenv("DATABASE_URL"):
         from .pgstore import PostgresDatabase
 
+        progress("banco")
         db = PostgresDatabase(os.environ["DATABASE_URL"], embedder.dim)
 
         def new_private(user: User) -> Workspace:
@@ -379,6 +395,60 @@ def google_service(db) -> GoogleService | None:
     return GoogleService(connections, lambda token: RestGoogle(token, client_id, client_secret))
 
 
+STAGES = ("servidor", "modelo", "exemplo", "banco", "pronto", "falhou")
+READY_WAIT = 50.0  # seconds a request waits for the start-up load (Firebase Hosting gives up at 60)
+STAGE_WAIT = 20.0  # longest /api/pronto holds a request waiting for the next step
+
+
+class Startup:
+    """Loads the app state in a background thread, so the server answers from its first second.
+
+    Cloud Run starts the container when a request arrives and nothing is running. Loading the
+    embedding model and indexing the demo takes 30 to 60 seconds; meanwhile the cover, /api/me and
+    the login answer at once, and routes that need the state wait for it (up to READY_WAIT).
+
+    /api/pronto is a long poll: it answers when the step changes. The page shows each step, and an
+    open request is also what keeps Cloud Run giving CPU to the instance while it loads (between
+    requests it is throttled to almost nothing)."""
+
+    def __init__(self) -> None:
+        self.stage = "servidor"
+        self.state: AppState | None = None
+        self.error: str | None = None
+        self.started = time.monotonic()
+        self._changed = threading.Condition()
+
+    def set_stage(self, stage: str) -> None:
+        with self._changed:
+            self.stage = stage
+            self._changed.notify_all()
+
+    def run(self, load: Callable) -> None:
+        try:
+            state = load(self.set_stage) if inspect.signature(load).parameters else load()
+        except Exception as error:  # the server stays up and says so, instead of a revision that never starts
+            log.exception("a carga inicial falhou")
+            self.error = error.__class__.__name__
+            self.set_stage("falhou")
+            return
+        self.state = state
+        self.set_stage("pronto")
+
+    def wait_change(self, known: str, timeout: float) -> None:
+        with self._changed:
+            self._changed.wait_for(lambda: self.stage != known, timeout=timeout)
+
+    def get(self, timeout: float | None = None) -> AppState:
+        with self._changed:
+            self._changed.wait_for(lambda: self.stage in ("pronto", "falhou"),
+                                   timeout=READY_WAIT if timeout is None else timeout)
+        if self.state is not None:
+            return self.state
+        if self.error is not None:
+            raise HTTPException(503, "O servidor não conseguiu iniciar. Tente de novo em alguns minutos.")
+        raise HTTPException(503, "O servidor ainda está acordando. Tente de novo em instantes.")
+
+
 class RateLimiter:
     """Sliding window per client. The demo runs on a free LLM quota, so one visitor must not drain it."""
 
@@ -408,7 +478,7 @@ def client_id(request: Request) -> str:
 # ---------- app ----------
 
 def create_app(
-    load: Callable[[], AppState] = load_state,
+    load: Callable[..., AppState] = load_state,
     limiter: RateLimiter | None = None,
     auth: AuthSettings | None = None,
 ) -> FastAPI:
@@ -425,7 +495,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.agenda = load()
+        # Loads in the background: uvicorn starts answering at once (see Startup).
+        app.state.startup = Startup()
+        threading.Thread(target=app.state.startup.run, args=(load,), name="carga-inicial", daemon=True).start()
         yield
 
     app = FastAPI(title="agenda-ia", version="0.6.0", lifespan=lifespan)
@@ -444,7 +516,8 @@ def create_app(
         return response
 
     def state(request: Request) -> AppState:
-        return request.app.state.agenda
+        """The loaded state; waits for the start-up load (sync routes only: it blocks the thread)."""
+        return request.app.state.startup.get()
 
     def same_site_only(request: Request) -> None:
         # Cookie-authenticated writes must carry a custom header. A page on another site cannot add it
@@ -737,7 +810,16 @@ def create_app(
                 raise HTTPException(404, "Compromisso não encontrado, ou ele faz parte da agenda original.")
         return {"apagado": event_id}
 
-    # ----- session -----
+    # ----- start-up and session (these answer before the state is loaded) -----
+
+    @app.get("/api/pronto", response_model=ReadyOut)
+    def ready(request: Request, etapa: str = "") -> ReadyOut:
+        """etapa: the step the page already knows; the answer waits (up to STAGE_WAIT) for the next one."""
+        startup: Startup = request.app.state.startup
+        if etapa in STAGES and etapa not in ("pronto", "falhou"):
+            startup.wait_change(etapa, STAGE_WAIT)
+        return ReadyOut(pronto=startup.stage == "pronto", etapa=startup.stage,
+                        segundos=round(time.monotonic() - startup.started, 1))
 
     @app.get("/api/config", response_model=ConfigOut)
     def get_config() -> ConfigOut:
@@ -832,7 +914,7 @@ def create_app(
 
     @app.post("/api/demo/transcrever", response_model=TranscriptOut, dependencies=[Depends(same_site_only)])
     async def demo_transcribe(request: Request) -> TranscriptOut:
-        return await transcribe_in(state(request), request)
+        return await transcribe_in(await run_in_threadpool(state, request), request)
 
     @app.post("/api/demo/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])
@@ -874,7 +956,7 @@ def create_app(
 
     @app.post("/api/minha/transcrever", response_model=TranscriptOut, dependencies=[Depends(same_site_only)])
     async def own_transcribe(request: Request, user: User = Depends(require_user)) -> TranscriptOut:
-        return await transcribe_in(state(request), request)
+        return await transcribe_in(await run_in_threadpool(state, request), request)
 
     @app.post("/api/minha/compromissos", response_model=EventOut, status_code=201,
               dependencies=[Depends(same_site_only), Depends(limit_writes)])

@@ -90,6 +90,15 @@ export interface Transcript {
   texto: string
 }
 
+/** The server's start-up steps, in order; "falhou" if loading raised. */
+export type Stage = 'servidor' | 'modelo' | 'exemplo' | 'banco' | 'pronto' | 'falhou'
+
+export interface Ready {
+  pronto: boolean
+  etapa: Stage
+  segundos: number // since this server instance started loading
+}
+
 export interface Config {
   login: boolean
   google_client_id: string | null

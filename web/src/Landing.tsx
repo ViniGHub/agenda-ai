@@ -2,13 +2,17 @@ import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { cn, STAMP_BUTTON } from '@/lib/utils'
 import { login } from './api'
+import { WarmupChecklist } from './components/WarmupChecklist'
 import { loadGoogleIdentity } from './lib/google'
+import type { Warmup } from './lib/warmup'
 import type { Config, Me } from './types'
 import { Footer } from './Workspace'
 
 interface Props {
   config: Config | null
   configError: string | null
+  warmup: Warmup
+  opening: boolean // this device was signed in: the agenda opens as soon as the server confirms
   onDemo: () => void
   onSignedIn: (me: Me) => void
 }
@@ -30,7 +34,7 @@ function loginErrorFromUrl(): string | null {
 }
 
 /** The notebook's cover: sign in for your own agenda, or try the fictitious one without an account. */
-export function Landing({ config, configError, onDemo, onSignedIn }: Props) {
+export function Landing({ config, configError, warmup, opening, onDemo, onSignedIn }: Props) {
   const buttonRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(loginErrorFromUrl)
   const [signingIn, setSigningIn] = useState(false)
@@ -75,7 +79,7 @@ export function Landing({ config, configError, onDemo, onSignedIn }: Props) {
     return () => {
       cancelled = true
     }
-  }, [clientId, redirect, onSignedIn])
+  }, [clientId, redirect, onSignedIn, opening]) // the popup button mounts when the cover leaves "opening"
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-[1280px] flex-col gap-6 px-4 py-6 sm:px-6">
@@ -97,41 +101,51 @@ export function Landing({ config, configError, onDemo, onSignedIn }: Props) {
               Pergunte em português sobre a agenda. Cada resposta diz de qual compromisso saiu.
             </p>
 
-            <div className="mt-[var(--line)] flex flex-col gap-[calc(var(--line)/2)]">
-              <section>
-                <Button
-                  onClick={onDemo}
-                  variant="ghost"
-                  className={cn(STAMP_BUTTON, '-rotate-1 px-4 py-2.5 text-[12px]')}
-                >
-                  Testar com a agenda fictícia →
-                </Button>
-                <p className="mt-1 font-hand text-[1.2rem] leading-tight text-pencil">
-                  sem login. uma agenda inventada, refeita em volta desta semana.
-                </p>
-              </section>
+            {opening ? (
+              <div className="mt-[var(--line)]">
+                <p className="font-hand text-[1.4rem] leading-[var(--line)] text-primary">abrindo a sua agenda…</p>
+                <WarmupChecklist warmup={warmup} title="acordando o servidor" className="mt-1" />
+              </div>
+            ) : (
+              <div className="mt-[var(--line)] flex flex-col gap-[calc(var(--line)/2)]">
+                <section>
+                  <Button
+                    onClick={onDemo}
+                    variant="ghost"
+                    className={cn(STAMP_BUTTON, '-rotate-1 px-4 py-2.5 text-[12px]')}
+                  >
+                    Testar com a agenda fictícia →
+                  </Button>
+                  <p className="mt-1 font-hand text-[1.2rem] leading-tight text-pencil">
+                    sem login. uma agenda inventada, refeita em volta desta semana.
+                  </p>
+                </section>
 
-              <section aria-label="Entrar">
-                <p className="font-mono text-[11px] leading-[var(--line)] tracking-wide text-pencil uppercase">ou, se você tem acesso</p>
-                {clientId && redirect ? (
-                  <GoogleSignIn onClick={() => setSigningIn(true)} />
-                ) : clientId ? (
-                  <div ref={buttonRef} className="min-h-[44px]" />
-                ) : (
-                  <p className="font-hand text-[1.2rem] leading-tight text-pencil">
-                    {configError ?? (config ? 'o login ainda não foi configurado neste servidor.' : 'abrindo…')}
+                <section aria-label="Entrar">
+                  <p className="font-mono text-[11px] leading-[var(--line)] tracking-wide text-pencil uppercase">ou, se você tem acesso</p>
+                  {clientId && redirect ? (
+                    <GoogleSignIn onClick={() => setSigningIn(true)} />
+                  ) : clientId ? (
+                    <div ref={buttonRef} className="min-h-[44px]" />
+                  ) : (
+                    <p className="font-hand text-[1.2rem] leading-tight text-pencil">
+                      {configError ?? (config ? 'o login ainda não foi configurado neste servidor.' : 'abrindo…')}
+                    </p>
+                  )}
+                  <p className="mt-1 font-hand text-[1.2rem] leading-tight text-pencil">
+                    {signingIn ? 'indo para o Google…' : 'para a sua agenda privada. só contas autorizadas entram.'}
                   </p>
-                )}
-                <p className="mt-1 font-hand text-[1.2rem] leading-tight text-pencil">
-                  {signingIn ? 'indo para o Google…' : 'para a sua agenda privada. só contas autorizadas entram.'}
-                </p>
-                {error && (
-                  <p role="alert" className="mt-1 font-hand text-[1.25rem] leading-tight text-primary">
-                    {error}
-                  </p>
-                )}
-              </section>
-            </div>
+                  {error && (
+                    <p role="alert" className="mt-1 font-hand text-[1.25rem] leading-tight text-primary">
+                      {error}
+                    </p>
+                  )}
+                </section>
+
+                {/* While the server wakes up, say so: the buttons work, the pages behind them wait. */}
+                <WarmupChecklist warmup={warmup} title="acordando o servidor" className="border-t border-dashed border-border pt-2" />
+              </div>
+            )}
           </div>
         </div>
       </main>
