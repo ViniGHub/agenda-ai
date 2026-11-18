@@ -30,8 +30,9 @@ if [ "$MANTER" -lt 1 ]; then
 fi
 
 size() {
-  gcloud artifacts repositories describe "$REPO" --project "$PROJECT" --location "$REGION" --format 'value(sizeBytes)' \
-    | awk '{ printf "%.0f MB", $1 / 1024 / 1024 }'
+  # The size is not a field of the repository: gcloud prints it as an extra "Repository Size:" line.
+  gcloud artifacts repositories describe "$REPO" --project "$PROJECT" --location "$REGION" 2>&1 \
+    | sed -n 's/^Repository Size: //p'
 }
 echo "Repositório $REPO: $(size)"
 
