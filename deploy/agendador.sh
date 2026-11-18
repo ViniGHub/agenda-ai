@@ -35,6 +35,9 @@ gcloud services enable cloudscheduler.googleapis.com --project "$PROJECT"
 echo "2/3 Conta de serviço que assina as chamadas..."
 if ! gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1; then
   gcloud iam service-accounts create "$SA_NAME" --project "$PROJECT" --display-name "agenda-ia (agendador)"
+  # Logo depois de criada, a conta ainda não existe para o Cloud Scheduler (a tarefa falharia com NOT_FOUND).
+  echo "    esperando 45 s para a conta nova se espalhar pelo Google..."
+  sleep 45
 fi
 
 URL="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format 'value(status.url)')"
