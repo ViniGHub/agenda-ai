@@ -92,6 +92,7 @@ export interface Transcript {
 export interface Config {
   login: boolean
   google_client_id: string | null
+  login_redirect: boolean // sign in by going to Google's page and back (works in the installed iPhone app)
 }
 
 export interface Me {

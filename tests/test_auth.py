@@ -1,4 +1,5 @@
 from datetime import date
+from urllib.parse import parse_qs, urlparse
 
 import numpy as np
 import pytest
@@ -60,7 +61,7 @@ def _login(client, token="token-dono"):
 
 
 def test_config_exposes_only_the_public_client_id(client):
-    assert client.get("/api/config").json() == {"login": True, "google_client_id": CLIENT_ID}
+    assert client.get("/api/config").json() == {"login": True, "google_client_id": CLIENT_ID, "login_redirect": False}
 
 
 def test_allowed_account_gets_a_secure_session_cookie(client):
@@ -128,7 +129,7 @@ def test_login_disabled_without_configuration(sample_db, fake_embedder):
 
     auth = AuthSettings(None, frozenset(), "x", fake_verifier)
     with TestClient(create_app(load, RateLimiter(5, 600), auth), base_url="https://testserver") as client:
-        assert client.get("/api/config").json() == {"login": False, "google_client_id": None}
+        assert client.get("/api/config").json() == {"login": False, "google_client_id": None, "login_redirect": False}
         assert _login(client).status_code == 503
 
 
@@ -154,3 +155,85 @@ def test_re_signing_for_the_demo_does_not_extend_a_login(client):
 
 def test_api_answers_are_never_cached(client):
     assert client.get("/api/demo/status").headers["cache-control"] == "no-store"
+
+
+# ---------- redirect sign-in (the installed iPhone app) ----------
+
+def _redirect_client(sample_db, fake_embedder, exchanged):
+    """An app whose Google is fake: the code exchange returns `exchanged`, the verifier reads the token as a key."""
+    def load():
+        demo = Workspace(Assistant(sample_db, fake_embedder, FakeModel()), "exemplo", date(2026, 11, 1), date(2027, 1, 31))
+        empty = SqliteEventStore.in_memory([], np.zeros((0, fake_embedder.dim), np.float32), fake_embedder.dim)
+        own = Workspace(Assistant(empty, fake_embedder, FakeModel()), "privada", date(2026, 11, 1), date(2027, 1, 31))
+        return AppState(demo, "fake", lambda user: own)
+
+    def verifier(token, audience):
+        assert audience == CLIENT_ID
+        return exchanged["claims"][token]
+
+    auth = AuthSettings(CLIENT_ID, frozenset({"dono@example.com"}), "segredo-de-teste", verifier,
+                        client_secret="segredo-do-cliente", base_url="https://agenda.example",
+                        exchanger=lambda code, cid, secret, uri: exchanged["tokens"][code])
+    return TestClient(create_app(load, RateLimiter(50, 600), auth), base_url="https://testserver", follow_redirects=False)
+
+
+def _start(client):
+    response = client.get("/api/login/google")
+    assert response.status_code == 302
+    query = parse_qs(urlparse(response.headers["location"]).query)
+    return query["state"][0], query["nonce"][0], query
+
+
+def test_redirect_sign_in_goes_to_google_and_back(sample_db, fake_embedder):
+    claims = {}
+    exchanged = {"tokens": {"codigo-1": {"id_token": "jwt-1"}}, "claims": claims}
+    with _redirect_client(sample_db, fake_embedder, exchanged) as client:
+        assert client.get("/api/config").json()["login_redirect"] is True
+        state, nonce, query = _start(client)
+        assert query["redirect_uri"] == ["https://agenda.example/api/login/google/retorno"]
+        assert query["scope"] == ["openid email profile"] and query["client_id"] == [CLIENT_ID]
+        claims["jwt-1"] = {"email": "dono@example.com", "email_verified": True, "name": "Dono", "sub": "111", "nonce": nonce}
+        back = client.get(f"/api/login/google/retorno?code=codigo-1&state={state}")
+        assert back.status_code == 302 and back.headers["location"] == "/#minha"
+        assert client.get("/api/me").json()["logado"] is True
+        assert client.get("/api/minha/status").status_code == 200
+
+
+@pytest.mark.parametrize(
+    "tamper, reason",
+    [
+        ("state", "falhou"),  # an answer this browser did not ask for (login CSRF)
+        ("nonce", "falhou"),  # an ID token minted for another attempt
+        ("email", "sem-acesso"),  # a Google account outside the allowlist
+    ],
+)
+def test_redirect_sign_in_refuses_what_does_not_match(sample_db, fake_embedder, tamper, reason):
+    claims = {}
+    exchanged = {"tokens": {"codigo-1": {"id_token": "jwt-1"}}, "claims": claims}
+    with _redirect_client(sample_db, fake_embedder, exchanged) as client:
+        state, nonce, _ = _start(client)
+        claims["jwt-1"] = {
+            "email": "outra@example.com" if tamper == "email" else "dono@example.com", "email_verified": True,
+            "sub": "1", "nonce": "outro" if tamper == "nonce" else nonce,
+        }
+        sent_state = "forjado" if tamper == "state" else state
+        back = client.get(f"/api/login/google/retorno?code=codigo-1&state={sent_state}")
+        assert back.headers["location"] == f"/?erro_login={reason}"
+        assert client.get("/api/me").json()["logado"] is False
+
+
+def test_cancelled_or_unstarted_sign_in_is_explained(sample_db, fake_embedder):
+    with _redirect_client(sample_db, fake_embedder, {"tokens": {}, "claims": {}}) as client:
+        assert client.get("/api/login/google/retorno?error=access_denied").headers["location"] == "/?erro_login=cancelado"
+        assert client.get("/api/login/google/retorno?code=x&state=y").headers["location"] == "/?erro_login=falhou"
+
+
+def test_without_client_secret_the_popup_is_used(client):
+    assert client.get("/api/config").json()["login_redirect"] is False
+    response = client.get("/api/login/google", follow_redirects=False)
+    assert response.headers["location"] == "/?erro_login=indisponivel"
+
+
+def test_session_lasts_thirty_days(client):
+    cookie = _login(client).headers["set-cookie"].lower()
+    assert "max-age=2592000" in cookie

@@ -56,6 +56,14 @@ web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (
      /api/login · /api/logout · /api/me · /api/config
 ```
 
+## App no celular (PWA)
+
+O site pode ser instalado no celular como app: ícone na tela inicial, tela cheia, sem a barra do navegador. No iPhone, pelo Safari: Compartilhar → "Adicionar à Tela de Início" (a página mostra essa dica no iPhone). No Android e no Chrome do computador, a página oferece "instalar".
+
+- **Manifesto e ícones:** nome, cores do caderno e o ícone da capa com "ia", gerados de [`web/public/icone.svg`](web/public/icone.svg) nos tamanhos que cada sistema pede.
+- **Service worker** ([`vite-plugin-pwa`](https://vite-pwa-org.netlify.app/)): guarda a casca do app (HTML, JS, CSS, fontes), que abre na hora e mostra um aviso em vez de uma página de erro quando não há internet. A API nunca entra no cache: perguntas, agenda e login vão sempre à rede. Quando sai versão nova, o app avisa "nova versão disponível · atualizar".
+- **Layout de app:** no celular, uma página por vez, escolhida numa barra inferior (Conversa, Agenda, Como foi), com espaço para a barra de gestos do iPhone e o microfone maior.
+
 ## Armazenamento
 
 A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/agenda_ia/store.py)), que tem duas implementações:
@@ -73,8 +81,9 @@ Os mesmos testes de contrato rodam nas duas implementações ([`tests/test_store
 
 A capa do site tem dois caminhos: **"Testar com a agenda fictícia"**, sem conta, e **"Entrar com Google"**, para a agenda privada, que só abre para os e-mails autorizados.
 
-- O botão oficial do Google devolve um ID token (JWT assinado pelo Google). A API confere a assinatura, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`auth.py`](src/agenda_ia/auth.py)).
-- Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 8 horas. O token do Google não é guardado. O cookie se chama `__session` porque é o único nome que o Firebase Hosting repassa ao servidor; ele também guarda a cópia da demo, e o login tem relógio próprio dentro dele.
+- "Fazer login com o Google" leva à página do Google e volta com um código de uso único, que o servidor troca pelo ID token (JWT assinado pelo Google) usando a chave secreta do cliente OAuth. Um `state` e um `nonce` aleatórios, guardados no cookie, garantem que a volta é do login que este navegador começou. Esse fluxo funciona dentro do app instalado no iPhone, onde a janelinha (popup) do botão oficial não consegue avisar o app. Sem a chave secreta (no desenvolvimento local), a página usa o botão com popup.
+- A API confere a assinatura do token, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`auth.py`](src/agenda_ia/auth.py)).
+- Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 30 dias ("lembrar neste aparelho", para o app no celular não pedir login toda hora). O token do Google não é guardado. O cookie se chama `__session` porque é o único nome que o Firebase Hosting repassa ao servidor; ele também guarda a cópia da demo, e o login tem relógio próprio dentro dele.
 - Toda requisição `POST` precisa do cabeçalho `X-Requested-With: agenda-ia`. Um site de terceiros não consegue enviá-lo sem uma liberação de CORS que esta API nunca dá, o que barra ataques de CSRF.
 - A lista de permitidos e a chave que assina os cookies ficam no Secret Manager, nunca no repositório. Quem sai da lista perde o acesso mesmo com um cookie ainda válido.
 - A agenda privada começa vazia: dá para importar o `.ics` exportado do Google Agenda ou anotar compromissos no formulário. Com o segredo do banco configurado, ela fica no Neon; sem ele, fica em memória e a tela avisa que é temporária.
@@ -250,3 +259,5 @@ A rodada também pegou um defeito de texto: o modelo dizia "férias começam sá
 - [x] Cadastro por frase ("dentista quinta às 15h na clínica Sorriso"): o formulário abre preenchido e nada é salvo sem confirmação
 - [x] Anotar pela conversa: pedido explícito anota com desfazer; o que não estiver claro pergunta antes
 - [x] Mensagens de voz: gravar no celular, transcrever (Whisper no Groq) e seguir o mesmo caminho da conversa
+- [x] App instalável no celular (PWA), com login por redirecionamento que funciona no iPhone
+- [ ] Google Agenda e e-mail com os compromissos do dia às 8h

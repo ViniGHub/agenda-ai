@@ -8,6 +8,8 @@
 #   PROJECT           projeto (padrão: o do gcloud)
 #   REGION            região (padrão: us-east1)
 #   GOOGLE_CLIENT_ID  ID do cliente OAuth do login com Google; se vier vazio, o serviço mantém o atual
+#   AGENDA_IA_URL     endereço público (ex.: https://agenda-ia.web.app), usado no retorno do login;
+#                     se vier vazio, o serviço mantém o atual
 set -euo pipefail
 
 PROJECT="${PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
@@ -21,6 +23,7 @@ GROQ_SECRET="groq-api-key"
 SESSION_SECRET="agenda-ia-sessao"
 ALLOWED_SECRET="agenda-ia-permitidos"
 DB_SECRET="agenda-ia-banco"  # optional: Postgres connection string (Neon); without it the private agenda lives in memory
+OAUTH_SECRET="agenda-ia-google-segredo"  # optional: the OAuth client's secret; turns on the redirect sign-in (iPhone app)
 
 if [ -z "$PROJECT" ]; then
   echo "Defina o projeto antes: gcloud config set project ID_DO_PROJETO" >&2
@@ -72,6 +75,15 @@ else
   echo "      para ligar: read -rs URL && printf '%s' \"\$URL\" | gcloud secrets create $DB_SECRET --data-file=- && unset URL"
 fi
 
+if secret_exists "$OAUTH_SECRET"; then
+  echo "    segredo do cliente OAuth: configurado, o login vai ao Google e volta (funciona no app do iPhone)"
+  SECRETS="$SECRETS,GOOGLE_CLIENT_SECRET=$OAUTH_SECRET:latest"
+  APP_SECRETS+=("$OAUTH_SECRET")
+else
+  echo "    segredo do cliente OAuth: não configurado, o login usa a janela do Google"
+  echo "      para ligar: read -rs S && printf '%s' \"\$S\" | gcloud secrets create $OAUTH_SECRET --data-file=- && unset S"
+fi
+
 echo "3/5 Conta de serviço do app, que só pode ler esses segredos..."
 if ! gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1; then
   gcloud iam service-accounts create "$SA_NAME" --project "$PROJECT" --display-name "agenda-ia (Cloud Run)"
@@ -101,6 +113,9 @@ EXTRA=()
 if [ -n "${GOOGLE_CLIENT_ID:-}" ]; then
   # Public value (it goes to the browser); only changed when passed, otherwise the service keeps it.
   EXTRA+=(--update-env-vars "GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID")
+fi
+if [ -n "${AGENDA_IA_URL:-}" ]; then
+  EXTRA+=(--update-env-vars "AGENDA_IA_URL=$AGENDA_IA_URL")
 fi
 # min-instances 0: desliga quando ninguém usa (custo zero parado).
 # max-instances 1: teto de gasto, mesmo sob abuso; a API ainda limita 20 perguntas por visitante.

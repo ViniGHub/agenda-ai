@@ -76,7 +76,7 @@ export function Chat({
   let lastUserText = ''
 
   return (
-    <section aria-label="Conversa" className="flex min-h-[34rem] flex-1 flex-col lg:min-h-0">
+    <section aria-label="Conversa" className="flex min-h-0 flex-1 flex-col">
       <div ref={listRef} className="paper flex-1 overflow-y-auto py-[var(--line)]" aria-live="polite">
         {messages.length === 0 && (
           <Line>
@@ -265,7 +265,7 @@ export function Chat({
             {canRecord && (
               <Button type="button" variant="ghost" size="icon" aria-label="Gravar uma mensagem de voz"
                 title="Gravar uma mensagem de voz" disabled={pending || disabled} onClick={() => void voice.start()}
-                className="shrink-0 rounded-full text-primary hover:bg-primary/10">
+                className="shrink-0 rounded-full text-primary hover:bg-primary/10 max-lg:size-11 max-lg:[&_svg]:size-5">
                 <MicIcon />
               </Button>
             )}

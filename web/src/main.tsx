@@ -1,7 +1,8 @@
-﻿import { StrictMode } from 'react'
+import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import App from './App'
+import { AppNotices } from './components/AppNotices'
 import './index.css'
 
 // Follow the system theme: the shadcn tokens switch on the .dark class.
@@ -14,6 +15,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <TooltipProvider delayDuration={200}>
       <App />
+      <AppNotices />
     </TooltipProvider>
   </StrictMode>,
 )

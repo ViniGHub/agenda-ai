@@ -25,6 +25,7 @@ The response models below are the contract with the front-end; web/src/types.ts 
 
 from __future__ import annotations
 
+import mimetypes
 import os
 import secrets
 import tempfile
@@ -40,12 +41,13 @@ from typing import Callable, Literal
 
 import numpy as np
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from .assistant import Assistant
-from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, SESSION_SECONDS, AuthError, AuthSettings, User
+from .auth import COOKIE_NAME, CSRF_HEADER, CSRF_VALUE, REDIRECT_PATH, SESSION_SECONDS, AuthError, AuthSettings, User
 from .calendar_loader import format_when, load_events
 from .config import ROOT, TZ
 from .drafting import NoEventError, Suggestion, draft_from_text, explicit_request
@@ -55,6 +57,7 @@ from .speech import AUDIO_TYPES, Transcriber, UnavailableTranscriber
 from .store import BASE, CREATED, IMPORTED, SqliteEventStore, StoredEvent
 
 WEB_DIST = ROOT / "web" / "dist"
+mimetypes.add_type("application/manifest+json", ".webmanifest")  # the installable app's manifest
 MAX_QUESTION_CHARS = 300
 DEMO_SESSION_SECONDS = 2 * 60 * 60
 DEMO_MAX_SESSIONS = 200
@@ -144,6 +147,7 @@ class StatusOut(BaseModel):
 class ConfigOut(BaseModel):
     login: bool
     google_client_id: str | None
+    login_redirect: bool = False  # sign in by going to Google and back (needed in the iPhone app)
 
 
 class MeOut(BaseModel):
@@ -534,7 +538,41 @@ def create_app(
 
     @app.get("/api/config", response_model=ConfigOut)
     def get_config() -> ConfigOut:
-        return ConfigOut(login=auth.enabled, google_client_id=auth.client_id if auth.enabled else None)
+        return ConfigOut(login=auth.enabled, google_client_id=auth.client_id if auth.enabled else None,
+                         login_redirect=auth.redirect_enabled)
+
+    # Redirect sign-in. Errors come back to the cover as ?erro_login=..., which the page explains.
+    @app.get("/api/login/google")
+    def google_start(request: Request) -> RedirectResponse:
+        if not login_limiter.allow(client_id(request)):
+            return RedirectResponse("/?erro_login=limite", status_code=302)
+        try:
+            url, session = auth.start_redirect(session_of(request))
+        except AuthError:
+            return RedirectResponse("/?erro_login=indisponivel", status_code=302)
+        response = RedirectResponse(url, status_code=302)
+        save_session(response, session)
+        return response
+
+    @app.get(REDIRECT_PATH)
+    def google_return(request: Request, code: str = "", state: str = "", error: str = "") -> RedirectResponse:
+        session = session_of(request)
+        if error:  # the person closed or refused Google's page
+            reason = "cancelado"
+        else:
+            try:
+                user = auth.finish_redirect(session, code, state)
+            except AuthError as failure:
+                reason = "sem-acesso" if failure.status == 403 else "falhou"
+            else:
+                session.pop("oauth", None)
+                response = RedirectResponse("/#minha", status_code=302)
+                save_session(response, auth.with_user(session, user))
+                return response
+        session.pop("oauth", None)
+        response = RedirectResponse(f"/?erro_login={reason}", status_code=302)
+        save_session(response, session)
+        return response
 
     @app.get("/api/me", response_model=MeOut)
     def get_me(request: Request) -> MeOut:

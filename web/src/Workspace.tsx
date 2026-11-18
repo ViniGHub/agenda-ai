@@ -1,3 +1,4 @@
+import { CalendarDays, ListChecks, MessageSquareText } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { InkLink } from '@/components/ui/skiper-ui/ink-link'
@@ -47,6 +48,9 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const [tab, setTabState] = useState<Tab>('agenda')
   const [detailsNew, setDetailsNew] = useState(0)
   const tabRef = useRef<Tab>('agenda') // the tab right now, for answers that arrive after an await
+  // On a phone the notebook shows one page at a time, picked in the bottom bar.
+  const [pane, setPaneState] = useState<'conversa' | Tab>('conversa')
+  const paneRef = useRef<'conversa' | Tab>('conversa')
   const [focusedEventId, setFocusedEventId] = useState<number | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
@@ -55,11 +59,22 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const nextId = useRef(1)
   const fileRef = useRef<HTMLInputElement>(null)
 
+  function setPane(next: 'conversa' | Tab) {
+    paneRef.current = next
+    setPaneState(next)
+  }
+
+  /** Opens a right-hand tab; on a phone that also brings its page to the front. */
   function setTab(next: Tab) {
     tabRef.current = next
     setTabState(next)
+    setPane(next)
     if (next === 'detalhes') setDetailsNew(0)
   }
+
+  /** Is "Como foi respondido" on screen right now? (the right page on a computer, the open page on a phone) */
+  const detailsOnScreen = () =>
+    window.matchMedia('(min-width: 1024px)').matches ? tabRef.current === 'detalhes' : paneRef.current === 'detalhes'
 
   function handleError(error: unknown): string {
     if (error instanceof ApiError && error.status === 401) onSessionLost()
@@ -117,7 +132,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       const id = nextId.current++
       setMessages((m) => [...m, { id, role: 'assistant', answer, mode }])
       setSelectedId(id)
-      if (tabRef.current !== 'detalhes') setDetailsNew((n) => n + 1)
+      if (!detailsOnScreen()) setDetailsNew((n) => n + 1)
       if (answer.acao?.tipo === 'anotado') load() // already in the agenda: refresh the count and the list
     } catch (error) {
       setMessages((m) => [...m, { id: nextId.current++, role: 'error', text: handleError(error) }])
@@ -254,10 +269,11 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
   const emptyOwn = !isDemo && status !== null && status.eventos === 0
 
   return (
-    <div className="mx-auto flex min-h-dvh max-w-[1280px] flex-col gap-5 px-4 py-6 sm:px-6 lg:h-dvh">
+    // A phone gets the app layout: the whole screen, pages that scroll inside, a bar at the bottom.
+    <div className="mx-auto flex h-dvh max-w-[1280px] flex-col gap-3 px-3 pt-3 sm:px-6 lg:gap-5 lg:py-6">
       <header className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
         <div>
-          <h1 className="font-heading text-[2.6rem] leading-none font-semibold tracking-tight [font-variation-settings:'SOFT'_100,'WONK'_1] sm:text-5xl">
+          <h1 className="font-heading text-[2rem] leading-none font-semibold tracking-tight [font-variation-settings:'SOFT'_100,'WONK'_1] sm:text-5xl">
             {isDemo ? (
               <>
                 Agenda <em className="font-medium text-primary">ia</em>
@@ -268,7 +284,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
               </>
             )}
           </h1>
-          <p className="mt-2 max-w-xl text-muted-foreground">
+          <p className="mt-2 max-w-xl text-muted-foreground max-lg:hidden">
             Pergunte, ou peça para anotar. Cada resposta diz de qual compromisso saiu.
           </p>
         </div>
@@ -280,12 +296,12 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
             </InkLink>
           </div>
           {isDemo ? (
-            <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-primary sm:-rotate-1 sm:text-right">
+            <p className="max-w-[19rem] font-hand text-[1.05rem] leading-tight text-primary sm:-rotate-1 sm:text-right sm:text-[1.2rem]">
               modo demonstração: agenda fictícia, refeita em volta desta semana. não escreva nem fale dados pessoais: a
               mensagem vai para um modelo de linguagem.
             </p>
           ) : (
-            <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-pencil sm:-rotate-1 sm:text-right">
+            <p className="max-w-[19rem] font-hand text-[1.2rem] leading-tight text-pencil max-lg:hidden sm:-rotate-1 sm:text-right">
               só você vê esta agenda.
               {status && !status.persistente && ' por enquanto ela é temporária: some quando o servidor reinicia.'}
             </p>
@@ -349,7 +365,7 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
       )}
 
       <main className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-[10px] bg-card shadow-[0_1px_0_var(--border),0_24px_48px_-24px_rgb(0_0_0/0.45)] ring-1 ring-border lg:grid-cols-[1.15fr_1fr]">
-        <div className="flex min-h-0 flex-col lg:shadow-[inset_-22px_0_26px_-26px_rgb(0_0_0/0.4)]">
+        <div className={cn('flex min-h-0 flex-col lg:shadow-[inset_-22px_0_26px_-26px_rgb(0_0_0/0.4)]', pane !== 'conversa' && 'max-lg:hidden')}>
           <Chat
             messages={messages}
             pending={pending}
@@ -382,9 +398,12 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
         <Tabs
           value={tab}
           onValueChange={(value) => setTab(value as Tab)}
-          className="min-h-[32rem] gap-0 border-t border-border lg:min-h-0 lg:border-t-0 lg:border-l lg:shadow-[inset_22px_0_26px_-26px_rgb(0_0_0/0.35)]"
+          className={cn(
+            'min-h-0 gap-0 lg:border-l lg:shadow-[inset_22px_0_26px_-26px_rgb(0_0_0/0.35)]',
+            pane === 'conversa' && 'max-lg:hidden',
+          )}
         >
-          <TabsList variant="line" className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-card px-6 pt-3 pb-0">
+          <TabsList variant="line" className="h-auto w-full justify-start gap-6 rounded-none border-b border-border bg-card px-6 pt-3 pb-0 max-lg:hidden">
             <TabsTrigger value="agenda" className="flex-none px-0 pb-2.5 font-heading text-[1.05rem]">
               Agenda
               {status && <span className="font-mono text-[11px] text-pencil">{agenda.length}</span>}
@@ -416,7 +435,44 @@ export function Workspace({ space, user, onLeave, onSessionLost }: Props) {
         </Tabs>
       </main>
 
-      <Footer />
+      <div className="max-lg:hidden">
+        <Footer />
+      </div>
+
+      {/* Phone: the three pages of the notebook, one at a time. Padded for the iPhone's home bar. */}
+      <nav aria-label="Páginas" className="-mx-3 grid grid-cols-3 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] sm:-mx-6 lg:hidden">
+        {(
+          [
+            ['conversa', 'Conversa', MessageSquareText],
+            ['agenda', 'Agenda', CalendarDays],
+            ['detalhes', 'Como foi', ListChecks],
+          ] as const
+        ).map(([key, label, Icon]) => (
+          <button
+            key={key}
+            type="button"
+            aria-current={pane === key ? 'page' : undefined}
+            onClick={() => (key === 'conversa' ? setPane('conversa') : setTab(key))}
+            className={cn(
+              'relative flex flex-col items-center gap-0.5 pt-2 pb-1.5 font-mono text-[10px] tracking-wide uppercase',
+              pane === key ? 'text-primary' : 'text-pencil',
+            )}
+          >
+            <Icon className="size-5" aria-hidden />
+            <span className={cn(key === 'detalhes' && detailsNew > 0 && 'marker marker-soft text-foreground')}>{label}</span>
+            {key === 'agenda' && status && (
+              <span className="absolute top-1.5 left-[calc(50%+0.9rem)] font-mono text-[9px] text-pencil">{agenda.length}</span>
+            )}
+            {key === 'detalhes' && detailsNew > 0 && (
+              <>
+                <span className="absolute top-2 left-[calc(50%+0.8rem)] size-1.5 rounded-full bg-primary" aria-hidden />
+                <span className="sr-only">(resposta nova)</span>
+              </>
+            )}
+          </button>
+        ))}
+      </nav>
+
       <EventForm open={formOpen} space={space} llm={status?.llm ?? false} seed={formSeed?.draft ?? null}
         editing={formEditing?.event ?? null}
         onOpenChange={setFormOpen} onSaved={onSaved} />

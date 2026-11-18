@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- The app icon: the notebook's cloth cover, its elastic band and a ruled paper label with "ia".
+       Everything that matters sits inside the central 80%, so Android can crop it to a circle. -->
+  <rect width="512" height="512" fill="#7d3326"/>
+  <rect x="380" y="0" width="26" height="512" fill="#000" opacity="0.35"/>
+  <g transform="translate(96 132)">
+    <rect width="264" height="248" rx="10" fill="#fbf7ee"/>
+    <g stroke="#cfdbe4" stroke-width="3">
+      <line x1="0" y1="62" x2="264" y2="62"/>
+      <line x1="0" y1="124" x2="264" y2="124"/>
+      <line x1="0" y1="186" x2="264" y2="186"/>
+    </g>
+    <line x1="44" y1="0" x2="44" y2="248" stroke="#e8a99c" stroke-width="3"/>
+    <text x="152" y="176" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-style="italic"
+          font-weight="600" font-size="150" fill="#b23a26">ia</text>
+  </g>
+</svg>
