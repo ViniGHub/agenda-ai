@@ -397,6 +397,7 @@ def google_service(db) -> GoogleService | None:
 
 STAGES = ("servidor", "modelo", "exemplo", "banco", "pronto", "falhou")
 READY_WAIT = 50.0  # seconds a request waits for the start-up load (Firebase Hosting gives up at 60)
+TASK_READY_WAIT = 100.0  # the 8 o'clock task calls Cloud Run directly (timeout 120 s) and usually wakes it up
 STAGE_WAIT = 20.0  # longest /api/pronto holds a request waiting for the next step
 
 
@@ -1053,7 +1054,8 @@ def create_app(
     @app.post("/api/tarefas/resumo-diario", response_model=TaskOut)
     def daily_summary_task(request: Request) -> TaskOut:
         check_scheduler(request)
-        s = state(request)
+        # A cold start takes about a minute (measured: 55 s), more than READY_WAIT.
+        s = request.app.state.startup.get(timeout=TASK_READY_WAIT)
         sent = failed = 0
         if s.google is not None:
             day = datetime.now(TZ).date()

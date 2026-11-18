@@ -75,3 +75,24 @@ def test_a_failed_load_is_reported_not_hidden(slow):
     response = slow.get("/api/demo/status")
     assert response.status_code == 503 and "não conseguiu iniciar" in response.json()["detail"]
     assert slow.get("/api/config").status_code == 200  # the cover still opens
+
+
+def test_the_morning_task_waits_longer_than_the_page(sample_db, fake_embedder, monkeypatch):
+    """Cloud Scheduler wakes the server itself, so its call waits past READY_WAIT for the load."""
+    monkeypatch.setattr(api, "READY_WAIT", 0.3)
+    monkeypatch.setattr(api, "TASK_READY_WAIT", 5.0)
+    monkeypatch.setenv("AGENDA_IA_AGENDADOR", "agendador@projeto.iam.gserviceaccount.com")
+    release = threading.Event()
+
+    def load():
+        release.wait(10)
+        demo = Workspace(Assistant(sample_db, fake_embedder, FakeModel()), "exemplo", date(2026, 11, 1), date(2027, 1, 31))
+        return AppState(demo, "fake", lambda user: demo)
+
+    scheduler = lambda token, audience: {"email": "agendador@projeto.iam.gserviceaccount.com", "email_verified": True}  # noqa: E731
+    auth = AuthSettings(client_id="id", allowed=frozenset(), secret="s", verifier=scheduler)
+    with TestClient(create_app(load, RateLimiter(50, 600), auth), base_url="https://testserver") as client:
+        threading.Timer(0.8, release.set).start()  # longer than READY_WAIT, shorter than the task's wait
+        response = client.post("/api/tarefas/resumo-diario", headers={"Authorization": "Bearer token"})
+        release.set()
+    assert response.status_code == 200 and response.json() == {"enviados": 0, "falhas": 0}
