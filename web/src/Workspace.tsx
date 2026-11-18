@@ -19,6 +19,7 @@ import {
   syncGoogle,
   transcribeAudio,
 } from './api'
+import { AgendaCalendar } from './components/AgendaCalendar'
 import { AgendaPanel } from './components/AgendaPanel'
 import { GoogleBar } from './components/GoogleBar'
 import { WarmupChecklist } from './components/WarmupChecklist'
@@ -54,6 +55,19 @@ const GOOGLE_RETURN: Record<string, string> = {
   indisponivel: 'a conexão com o google não está configurada neste servidor.',
   limite: 'muitas tentativas seguidas. tente de novo em alguns minutos.',
 }
+// How the agenda page shows: a month calendar or the day-by-day list. The last one chosen on this
+// device comes back; the first time it is the calendar.
+type AgendaView = 'calendario' | 'lista'
+const VIEW_KEY = 'agenda-ia:visao'
+
+function readAgendaView(): AgendaView {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'lista' ? 'lista' : 'calendario'
+  } catch {
+    return 'calendario'
+  }
+}
+
 const SYNC_EVERY_MS = 5 * 60 * 1000 // opening the agenda syncs with Google if the last sync is older than this
 
 function googleReturnFromUrl(): string | null {
@@ -96,6 +110,8 @@ export function Workspace({ space, user, warmup, onLeave, onSessionLost }: Props
   const [formOpen, setFormOpen] = useState(false)
   const [formSeed, setFormSeed] = useState<{ draft: Draft; messageId: number } | null>(null) // form opened from a chat note
   const [formEditing, setFormEditing] = useState<{ event: AgendaEvent; messageId: number | null } | null>(null)
+  const [formDate, setFormDate] = useState<string | null>(null) // a day picked on the calendar
+  const [agendaView, setAgendaViewState] = useState<AgendaView>(readAgendaView)
   const [notice, setNotice] = useState<string | null>(googleReturnFromUrl)
   const [google, setGoogle] = useState<GoogleStatus | null>(null)
   const [googleBusy, setGoogleBusy] = useState<string | null>(null) // what the Google bar is doing now
@@ -272,13 +288,32 @@ export function Workspace({ space, user, warmup, onLeave, onSessionLost }: Props
   function openForm(seed: { draft: Draft; messageId: number } | null) {
     setFormSeed(seed)
     setFormEditing(null)
+    setFormDate(null)
+    setFormOpen(true)
+  }
+
+  /** "Novo compromisso" already on a day: a day without a note was tapped on the calendar. */
+  function openFormOn(date: string) {
+    setFormSeed(null)
+    setFormEditing(null)
+    setFormDate(date)
     setFormOpen(true)
   }
 
   function openEdit(event: AgendaEvent, messageId: number | null = null) {
     setFormSeed(null)
     setFormEditing({ event, messageId })
+    setFormDate(null)
     setFormOpen(true)
+  }
+
+  function setAgendaView(view: AgendaView) {
+    setAgendaViewState(view)
+    try {
+      localStorage.setItem(VIEW_KEY, view)
+    } catch {
+      // private browsing: the choice lasts until the page closes
+    }
   }
 
   // ----- the sticky note under a chat reply ("marca dentista quinta às 15h") -----
@@ -557,15 +592,53 @@ export function Workspace({ space, user, warmup, onLeave, onSessionLost }: Props
                 onDisconnect={() => void disconnect()}
               />
             )}
+            <div
+              role="group"
+              aria-label="Como ver a agenda"
+              className="flex items-center justify-end gap-3 border-b border-border px-6 py-1.5 font-mono text-[10.5px] tracking-wide text-pencil uppercase"
+            >
+              <span>ver:</span>
+              {(
+                [
+                  ['calendario', 'calendário'],
+                  ['lista', 'lista'],
+                ] as const
+              ).map(([view, label]) => (
+                <button
+                  key={view}
+                  type="button"
+                  aria-pressed={agendaView === view}
+                  onClick={() => setAgendaView(view)}
+                  className={cn(
+                    'uppercase',
+                    agendaView === view ? 'text-primary underline decoration-2 underline-offset-4' : 'hover:text-primary',
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="min-h-0 flex-1">
-              <AgendaPanel
-                events={agenda}
-                loaded={status !== null}
-                citedIds={citedIds}
-                focusedEventId={focusedEventId}
-                onEdit={(event) => openEdit(event)}
-                onDelete={remove}
-              />
+              {agendaView === 'calendario' ? (
+                <AgendaCalendar
+                  events={agenda}
+                  loaded={status !== null}
+                  citedIds={citedIds}
+                  focusedEventId={focusedEventId}
+                  onEdit={(event) => openEdit(event)}
+                  onDelete={remove}
+                  onNew={openFormOn}
+                />
+              ) : (
+                <AgendaPanel
+                  events={agenda}
+                  loaded={status !== null}
+                  citedIds={citedIds}
+                  focusedEventId={focusedEventId}
+                  onEdit={(event) => openEdit(event)}
+                  onDelete={remove}
+                />
+              )}
             </div>
           </TabsContent>
         </Tabs>
@@ -610,7 +683,7 @@ export function Workspace({ space, user, warmup, onLeave, onSessionLost }: Props
       </nav>
 
       <EventForm open={formOpen} space={space} llm={status?.llm ?? false} seed={formSeed?.draft ?? null}
-        editing={formEditing?.event ?? null}
+        editing={formEditing?.event ?? null} initialDate={formDate}
         onOpenChange={setFormOpen} onSaved={onSaved} />
     </div>
   )

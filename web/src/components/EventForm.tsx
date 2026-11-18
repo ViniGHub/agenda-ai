@@ -16,6 +16,7 @@ interface Props {
   llm: boolean // without a language model the sentence box is hidden and the form is filled by hand
   seed: Draft | null // opened from a chat note: start filled in with what the model read
   editing: AgendaEvent | null // an event being edited: the form starts with its fields and saves over it
+  initialDate?: string | null // "YYYY-MM-DD": opened from a day on the calendar
   onOpenChange: (open: boolean) => void
   onSaved: (event: AgendaEvent, edited: boolean) => void
 }
@@ -57,7 +58,7 @@ const EXAMPLES = ['dentista quinta às 15h na clínica Sorriso', 'almoço com a 
  * until "Anotar na agenda".
  * The server validates everything again.
  */
-export function EventForm({ open, space, llm, seed, editing, onOpenChange, onSaved }: Props) {
+export function EventForm({ open, space, llm, seed, editing, initialDate, onOpenChange, onSaved }: Props) {
   const sentenceBox = llm && !editing // editing starts from the event itself, not from a sentence
   const [form, setForm] = useState<FormState>({ ...EMPTY, data: today() })
   const [error, setError] = useState<string | null>(null)
@@ -71,7 +72,7 @@ export function EventForm({ open, space, llm, seed, editing, onOpenChange, onSav
 
   useEffect(() => {
     if (open) {
-      setForm(editing ? fromEvent(editing) : { ...EMPTY, data: today() })
+      setForm(editing ? fromEvent(editing) : { ...EMPTY, data: initialDate ?? today() })
       setError(null)
       setSentence('')
       setSentenceNote(null)

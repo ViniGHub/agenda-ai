@@ -6,7 +6,7 @@ Pergunte em português sobre a sua agenda ("o que tenho amanhã?", "quando é o 
 
 > Em construção. Pronto: indexação, busca híbrida, resposta com o LLM, interface web (React + FastAPI), login com Google, cadastro de compromissos (no formulário, numa frase ou direto pela conversa, também por voz), importação de `.ics`, app instalável no celular, sincronização com o Google Agenda e e-mail com o dia às 8h. Falta: avaliação automática.
 
-A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir.
+A interface mostra, ao lado de cada resposta, como ela foi montada: como a pergunta foi entendida, o que a busca trouxe, o que foi citado e quanto custou. A aba "Agenda" é o gabarito para conferir, em duas visões: o **calendário do mês**, com um post-it em cada dia que tem compromisso (tocar abre os compromissos do dia; tocar num dia vazio abre o "Novo compromisso" naquela data; setas para mês e ano), e a **lista** dia a dia. O app lembra a última visão usada no aparelho; no primeiro acesso, abre no calendário.
 
 O visual é o de um caderno aberto: a pergunta aparece em letra de mão, a resposta é digitada sobre as linhas, as fontes ficam em marca-texto e o compromisso clicado aparece circulado na agenda. Feito com Tailwind CSS e componentes [shadcn/ui](https://ui.shadcn.com) (abas, botão, tooltip), tipografia Fraunces, IBM Plex e Caveat, e dois componentes do [Skiper UI](https://skiper-ui.com) adaptados (o cursor suave do campo de pergunta e o sublinhado animado dos links).
 
