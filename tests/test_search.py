@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
 
 from agenda_ia.config import TZ
-from agenda_ia.search import fts_query, hybrid_search, reciprocal_rank_fusion
+from agenda_ia.search.hybrid import fts_query, hybrid_search, reciprocal_rank_fusion
 
 
 def _day(d: date) -> datetime:

@@ -2,9 +2,9 @@ from datetime import datetime
 
 from conftest import FakeModel
 
-from agenda_ia.answering import NOT_CONFIRMED, build_user_prompt, compose
+from agenda_ia.chat.answering import NOT_CONFIRMED, build_user_prompt, compose
 from agenda_ia.config import TZ
-from agenda_ia.llm import LLMError
+from agenda_ia.ai.llm import LLMError
 
 NOW = datetime(2026, 11, 16, 12, 0, tzinfo=TZ)
 

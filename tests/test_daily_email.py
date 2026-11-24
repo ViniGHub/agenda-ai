@@ -1,10 +1,10 @@
 from datetime import date, datetime, timedelta
 from email import message_from_bytes, policy
 
-from agenda_ia.calendar_loader import Event
+from agenda_ia.events.calendar_loader import Event
 from agenda_ia.config import TZ
-from agenda_ia.daily_email import compose, message, todays_events
-from agenda_ia.store import SqliteEventStore
+from agenda_ia.google.daily_email import compose, message, todays_events
+from agenda_ia.storage.store import SqliteEventStore
 
 DAY = date(2026, 11, 18)  # a Wednesday
 

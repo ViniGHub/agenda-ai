@@ -4,8 +4,8 @@ import pytest
 from conftest import FakeModel
 
 from agenda_ia.config import TZ
-from agenda_ia.drafting import NoEventError, build_prompt, draft_from_text, explicit_request, parse_suggestion
-from agenda_ia.llm import LLMError
+from agenda_ia.chat.drafting import NoEventError, build_prompt, draft_from_text, explicit_request, parse_suggestion
+from agenda_ia.ai.llm import LLMError
 
 NOW = datetime(2026, 11, 17, 10, 30, tzinfo=TZ)  # a Tuesday
 TODAY = NOW.date()

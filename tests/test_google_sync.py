@@ -4,11 +4,11 @@ import numpy as np
 import pytest
 from conftest import FakeGoogle
 
-from agenda_ia.calendar_loader import Event
+from agenda_ia.events.calendar_loader import Event
 from agenda_ia.config import TZ
-from agenda_ia.google_link import GoogleError
-from agenda_ia.google_sync import push_new, push_update, sync
-from agenda_ia.store import CREATED, GOOGLE, IMPORTED, SqliteEventStore
+from agenda_ia.google.link import GoogleError
+from agenda_ia.google.sync import push_new, push_update, sync
+from agenda_ia.storage.store import CREATED, GOOGLE, IMPORTED, SqliteEventStore
 
 FIRST, LAST = date(2026, 11, 1), date(2027, 1, 31)
 

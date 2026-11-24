@@ -6,10 +6,10 @@ import pytest
 from conftest import FakeModel
 from fastapi.testclient import TestClient
 
-from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
-from agenda_ia.assistant import Assistant
-from agenda_ia.auth import COOKIE_NAME, AuthSettings
-from agenda_ia.store import SqliteEventStore
+from agenda_ia.api.server import AppState, RateLimiter, Workspace, create_app
+from agenda_ia.chat.assistant import Assistant
+from agenda_ia.api.auth import COOKIE_NAME, AuthSettings
+from agenda_ia.storage.store import SqliteEventStore
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 CLIENT_ID = "123.apps.googleusercontent.com"

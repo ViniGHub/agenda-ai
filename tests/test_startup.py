@@ -8,10 +8,10 @@ import pytest
 from conftest import FakeModel
 from fastapi.testclient import TestClient
 
-from agenda_ia import api
-from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
-from agenda_ia.assistant import Assistant
-from agenda_ia.auth import AuthSettings
+from agenda_ia.api import server as api
+from agenda_ia.api.server import AppState, RateLimiter, Workspace, create_app
+from agenda_ia.chat.assistant import Assistant
+from agenda_ia.api.auth import AuthSettings
 
 
 @pytest.fixture

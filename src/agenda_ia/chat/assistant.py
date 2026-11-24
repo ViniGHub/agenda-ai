@@ -1,0 +1,118 @@
+"""The whole chat flow: understand -> retrieve -> answer, or understand -> read the new appointment.
+
+A message the model classifies as "anotar" is not answered here: its fields come back in
+Result.suggestion and the API decides whether to save it, ask first or send it to the form.
+"""
+
+from __future__ import annotations
+
+import time as clock
+from dataclasses import dataclass
+from typing import Literal
+from datetime import datetime, time, timedelta
+
+from .answering import Answer, compose
+from ..config import TZ
+from .drafting import NoEventError, Suggestion, draft_from_text, explicit_request
+from ..ai.embeddings import Embedder
+from ..ai.llm import JSONModel, LLMError, Usage
+from ..search.hybrid import hybrid_search
+from ..storage.store import EventStore, StoredEvent
+from .understanding import Query, understand
+
+# "auto": the model decides between question and new appointment (with the guards below);
+# "pergunta": the person said it was a question; "anotar": the person asked to write it down.
+Mode = Literal["auto", "pergunta", "anotar"]
+
+
+@dataclass
+class Result:
+    question: str
+    query: Query
+    query_note: str | None
+    strategy: str
+    retrieved: list[StoredEvent]
+    answer: Answer
+    usage: Usage
+    seconds: float
+    suggestion: Suggestion | None = None  # set when the message asked to write down a new appointment
+
+
+NOTE_STRATEGY = "cadastro pela conversa"
+
+
+class Assistant:
+    def __init__(self, store: EventStore, embedder: Embedder, model: JSONModel,
+                 k: int = 5, wide_k: int = 20, list_limit: int = 40):
+        self.store, self.embedder, self.model = store, embedder, model
+        self.k, self.wide_k, self.list_limit = k, wide_k, list_limit
+
+    def ask(self, question: str, now: datetime | None = None, mode: Mode = "auto") -> Result:
+        began = clock.perf_counter()
+        now = now or datetime.now(TZ)
+        calls_before = (self.model.usage.calls, self.model.usage.prompt_tokens, self.model.usage.completion_tokens)
+
+        def finish(query, query_note, strategy, events, answer, suggestion=None) -> Result:
+            usage = Usage(
+                self.model.usage.calls - calls_before[0],
+                self.model.usage.prompt_tokens - calls_before[1],
+                self.model.usage.completion_tokens - calls_before[2],
+            )
+            return Result(question, query, query_note, strategy, events, answer, usage,
+                          clock.perf_counter() - began, suggestion)
+
+        if mode == "anotar":  # no need to ask the model what the message is
+            query, query_note = Query(tipo="anotar"), None
+        else:
+            query, query_note = understand(self.model, question, now)
+        if query.tipo == "anotar" and mode == "auto" and "?" in question and not explicit_request(question):
+            # "dentista quinta às 15h?" is a question, whatever the model said.
+            query, query_note = Query(tipo="buscar", busca=question), "tinha \"?\" e nenhum pedido para anotar"
+        if query.tipo == "anotar":
+            if mode != "pergunta":
+                try:
+                    suggestion = draft_from_text(self.model, question, now)
+                    return finish(query, query_note, NOTE_STRATEGY, [], Answer("", found=False), suggestion)
+                except LLMError as error:
+                    text = "Não consegui ler o compromisso agora. Tente de novo ou use \"+ Novo compromisso\"."
+                    return finish(query, query_note, NOTE_STRATEGY, [], Answer(text, found=False, note=f"LLMError: {error}"))
+                except NoEventError:
+                    query_note = "parecia um pedido para anotar, mas não havia compromisso na mensagem"
+            query = Query(tipo="buscar", busca=question)  # answered as a question after all
+        start, end = query.window()
+        if query.tipo in ("listar", "contar") and start is None and end is None:
+            start = datetime.combine(now.date(), time.min, tzinfo=TZ)  # "what do I have?" means from today on
+
+        if query.tipo == "buscar":
+            # One specific event: best matches, each recurring series once, at its next occurrence.
+            strategy = "busca híbrida"
+            hits = hybrid_search(self.store, self.embedder, query.busca or question, start, end, k=self.k, now=now)
+            events = [hit.stored for hit in hits]
+        elif query.busca:
+            # Listing or counting a kind of event: every occurrence counts, in time order.
+            strategy = "busca híbrida ampla"
+            hits = hybrid_search(self.store, self.embedder, query.busca, start, end, k=self.wide_k, collapse_series=False)
+            events = sorted((hit.stored for hit in hits), key=lambda s: s.event.start)
+        else:
+            strategy = "lista do período"
+            events = self.store.events_between(_ts(start), _ts(end), limit=self.list_limit)
+
+        answer = compose(self.model, question, events, now, describe_period(start, end))
+        return finish(query, query_note, strategy, events, answer)
+
+
+def describe_period(start: datetime | None, end: datetime | None) -> str:
+    if start and end:
+        last = (end - timedelta(days=1)).date()
+        if last == start.date():
+            return f"{start:%d/%m/%Y}"
+        return f"de {start:%d/%m/%Y} a {last:%d/%m/%Y}"
+    if start:
+        return f"a partir de {start:%d/%m/%Y}"
+    if end:
+        return f"até {(end - timedelta(days=1)):%d/%m/%Y}"
+    return "toda a agenda"
+
+
+def _ts(value: datetime | None) -> int | None:
+    return int(value.timestamp()) if value else None

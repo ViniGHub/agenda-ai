@@ -13,10 +13,10 @@ import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from . import store
-from .calendar_loader import WEEKDAYS, Event, format_when, load_events
+from .storage import store
+from .events.calendar_loader import WEEKDAYS, Event, format_when, load_events
 from .config import DEFAULT_DB, SAMPLE_CALENDAR, TZ
-from .search import hybrid_search
+from .search.hybrid import hybrid_search
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> None:
             print(text)
         return
 
-    from .embeddings import E5Embedder  # heavy import: torch and the model
+    from .ai.embeddings import E5Embedder  # heavy import: torch and the model
 
     if args.comando == "indexar":
         today = datetime.now(TZ).date()
@@ -82,8 +82,8 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.comando == "perguntar":
-        from .assistant import Assistant
-        from .llm import GroqModel, LLMError
+        from .chat.assistant import Assistant
+        from .ai.llm import GroqModel, LLMError
 
         try:
             model = GroqModel()

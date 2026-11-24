@@ -4,12 +4,12 @@ import pytest
 from conftest import FakeModel, FakeTranscriber
 from fastapi.testclient import TestClient
 
-from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
-from agenda_ia.assistant import Assistant
-from agenda_ia.auth import AuthSettings
+from agenda_ia.api.server import AppState, RateLimiter, Workspace, create_app
+from agenda_ia.chat.assistant import Assistant
+from agenda_ia.api.auth import AuthSettings
 from agenda_ia.config import TZ
-from agenda_ia.llm import LLMError, UnavailableModel
-from agenda_ia.speech import UnavailableTranscriber
+from agenda_ia.ai.llm import LLMError, UnavailableModel
+from agenda_ia.ai.speech import UnavailableTranscriber
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 

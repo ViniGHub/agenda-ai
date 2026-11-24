@@ -8,9 +8,9 @@ from datetime import date, datetime, timedelta
 import numpy as np
 import pytest
 
-from agenda_ia.calendar_loader import Event
+from agenda_ia.events.calendar_loader import Event
 from agenda_ia.config import TZ
-from agenda_ia.store import BASE, CREATED, IMPORTED, SqliteEventStore
+from agenda_ia.storage.store import BASE, CREATED, IMPORTED, SqliteEventStore
 
 WHEN = datetime(2026, 11, 20, 15, 0, tzinfo=TZ)
 
@@ -29,7 +29,7 @@ def make_store(request, fake_embedder):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL não definido")
-    from agenda_ia.pgstore import PostgresDatabase
+    from agenda_ia.storage.postgres import PostgresDatabase
 
     db = PostgresDatabase(url, fake_embedder.dim)
     prefix = f"teste-{uuid.uuid4()}"
@@ -151,7 +151,7 @@ def test_sqlite_clone_is_independent(sample_db, fake_embedder):
 
 
 def test_google_links_follow_each_event(make_store, fake_embedder):
-    from agenda_ia.store import GOOGLE
+    from agenda_ia.storage.store import GOOGLE
 
     store = make_store()
     [mine] = _add(store, fake_embedder, [_event("Dentista")])
@@ -171,8 +171,8 @@ def test_google_connections_are_encrypted_at_rest_in_postgres(fake_embedder):
     url = os.getenv("TEST_DATABASE_URL")
     if not url:
         pytest.skip("TEST_DATABASE_URL não definido")
-    from agenda_ia.google_link import CALENDAR_SCOPE, Connection, TokenCipher
-    from agenda_ia.pgstore import PostgresConnections, PostgresDatabase
+    from agenda_ia.google.link import CALENDAR_SCOPE, Connection, TokenCipher
+    from agenda_ia.storage.postgres import PostgresConnections, PostgresDatabase
 
     db = PostgresDatabase(url, fake_embedder.dim)
     owner = f"teste-{uuid.uuid4()}"
@@ -195,7 +195,7 @@ def test_google_connections_are_encrypted_at_rest_in_postgres(fake_embedder):
 
 
 def test_token_cipher_round_trip_and_tamper():
-    from agenda_ia.google_link import TokenCipher
+    from agenda_ia.google.link import TokenCipher
 
     cipher = TokenCipher("segredo")
     sealed = cipher.encrypt("refresh-1")

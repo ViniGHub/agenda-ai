@@ -9,13 +9,13 @@ import pytest
 from conftest import FakeGoogle, FakeModel
 from fastapi.testclient import TestClient
 
-from agenda_ia.api import TASKS_AUDIENCE, AppState, RateLimiter, Workspace, create_app
-from agenda_ia.assistant import Assistant
-from agenda_ia.auth import AuthSettings
+from agenda_ia.api.server import TASKS_AUDIENCE, AppState, RateLimiter, Workspace, create_app
+from agenda_ia.chat.assistant import Assistant
+from agenda_ia.api.auth import AuthSettings
 from agenda_ia.config import TZ
-from agenda_ia.google_link import (CALENDAR_SCOPE, GMAIL_SEND_SCOPE, GoogleAccessLost, GoogleError, GoogleService,
+from agenda_ia.google.link import (CALENDAR_SCOPE, GMAIL_SEND_SCOPE, GoogleAccessLost, GoogleError, GoogleService,
                                    MemoryConnections)
-from agenda_ia.store import SqliteEventStore
+from agenda_ia.storage.store import SqliteEventStore
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 CLIENT_ID = "123.apps.googleusercontent.com"

@@ -2,7 +2,7 @@ from datetime import datetime
 
 from conftest import FakeModel
 
-from agenda_ia.assistant import Assistant, describe_period
+from agenda_ia.chat.assistant import Assistant, describe_period
 from agenda_ia.config import TZ
 
 NOW = datetime(2026, 11, 16, 12, 0, tzinfo=TZ)
@@ -77,7 +77,7 @@ def test_message_without_an_appointment_is_answered_as_a_question(sample_db, fak
 
 
 def test_model_failure_while_reading_the_appointment(sample_db, fake_embedder):
-    from agenda_ia.llm import LLMError
+    from agenda_ia.ai.llm import LLMError
 
     model = FakeModel(NOTE, LLMError("fora do ar"))
     result = Assistant(sample_db, fake_embedder, model).ask("marca dentista quinta às 15h", NOW)

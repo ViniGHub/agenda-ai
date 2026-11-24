@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 
-from agenda_ia.calendar_loader import Event
+from agenda_ia.events.calendar_loader import Event
 from agenda_ia.config import TZ
-from agenda_ia.google_events import event_from_google, google_body, plain_text, split_people
+from agenda_ia.google.events import event_from_google, google_body, plain_text, split_people
 
 
 def _item(**fields):

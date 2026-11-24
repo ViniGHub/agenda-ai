@@ -6,13 +6,13 @@ from conftest import FakeModel
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from agenda_ia.api import AppState, RateLimiter, Workspace, create_app
-from agenda_ia.assistant import Assistant
-from agenda_ia.auth import AuthSettings
+from agenda_ia.api.server import AppState, RateLimiter, Workspace, create_app
+from agenda_ia.chat.assistant import Assistant
+from agenda_ia.api.auth import AuthSettings
 from agenda_ia.config import TZ
-from agenda_ia.editing import EventDraft, ImportError_, import_events
-from agenda_ia.sample import build
-from agenda_ia.store import SqliteEventStore
+from agenda_ia.events.editing import EventDraft, ImportError_, import_events
+from agenda_ia.events.sample import build
+from agenda_ia.storage.store import SqliteEventStore
 
 HEADERS = {"X-Requested-With": "agenda-ia"}
 SOON = (datetime.now(TZ) + timedelta(days=3)).date()

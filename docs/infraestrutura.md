@@ -148,7 +148,7 @@ A cota gratuita é de 6 versões ativas; com os cinco, são 5. Por isso a chave 
 
 O container do Cloud Run perde a memória quando desliga, então a agenda privada precisa de um banco fora dele. O Neon é um Postgres "serverless" com plano gratuito (1 GB por projeto, desliga sozinho depois de 5 minutos parado e liga na próxima consulta) e com a extensão **pgvector**.
 
-- **Tabela:** uma só, `eventos`, criada pela própria API na primeira conexão ([`pgstore.py`](../src/agenda_ia/pgstore.py)). Cada linha tem o dono (ID da conta Google), os campos do compromisso, o vetor de 384 números (`vector(384)`) e uma coluna `tsvector` gerada para a busca por palavra.
+- **Tabela:** uma só, `eventos`, criada pela própria API na primeira conexão ([`storage/postgres.py`](../src/agenda_ia/storage/postgres.py)). Cada linha tem o dono (ID da conta Google), os campos do compromisso, o vetor de 384 números (`vector(384)`) e uma coluna `tsvector` gerada para a busca por palavra.
 - **Índices:** `(dono, inicio)` para listar por data, GIN no `tsvector` e HNSW no vetor (distância de cosseno).
 - **Google Agenda:** cada evento ligado ao Google guarda o ID e a *etag* do Google (`google_id`, `google_etag`). A tabela `contas_google` tem uma linha por conta conectada: e-mail, permissões, se o e-mail das 8h está ligado, o dia do último envio e o *refresh token*, **cifrado** (Fernet) com uma chave derivada do segredo da sessão.
 - **Isolamento:** toda consulta tem `where dono = ...`, inclusive a exclusão.
@@ -180,7 +180,7 @@ Duas peças, em APIs e serviços / Google Auth Platform:
   - **URIs de redirecionamento autorizados:** `https://agenda-ia.web.app/api/login/google/retorno`, a volta do login e também da conexão com o Google Agenda. Atenção: ela vai nesta seção, não em "Origens", que recusa endereço com caminho.
   - O **ID** é público (vai para o navegador). A **chave secreta do cliente** fica no segredo `agenda-ia-google-segredo`: com ela o servidor troca o código da volta pelos tokens. O Google só mostra a chave inteira na hora em que ela é criada ("+ Add secret").
 
-A verificação do login acontece no servidor ([`auth.py`](../src/agenda_ia/auth.py)): assinatura do token com as chaves públicas do Google, público igual ao ID do cliente, emissor, validade, e-mail verificado e presença na lista.
+A verificação do login acontece no servidor ([`api/auth.py`](../src/agenda_ia/api/auth.py)): assinatura do token com as chaves públicas do Google, público igual ao ID do cliente, emissor, validade, e-mail verificado e presença na lista.
 
 ### Firebase Hosting (endereço limpo)
 
@@ -190,7 +190,7 @@ O endereço do Cloud Run (`agenda-ia-NUMERO.us-east1.run.app`) sempre leva o nú
 - **Como publicar:** [`deploy/firebase-hosting.sh`](../deploy/firebase-hosting.sh), no Cloud Shell. Ele usa a API REST do Hosting com o acesso do `gcloud` (cria o site, cria uma versão com a regra, finaliza e publica), então não precisa instalar nem logar no Firebase CLI. Antes da primeira vez, o Firebase precisa ser adicionado ao projeto no console, onde se aceitam os termos.
 - **Plano:** como o projeto tem faturamento (exigência do Cloud Run), o Firebase fica no plano Blaze, que mantém a cota gratuita do Hosting.
 - **Duas regras do Hosting que mudaram o código:**
-  - **Cookies:** ele remove todos os cookies dos pedidos, menos um chamado `__session`. Por isso o login e a cópia da demo ficam num cookie só, com esse nome ([`auth.py`](../src/agenda_ia/auth.py)).
+  - **Cookies:** ele remove todos os cookies dos pedidos, menos um chamado `__session`. Por isso o login e a cópia da demo ficam num cookie só, com esse nome ([`api/auth.py`](../src/agenda_ia/api/auth.py)).
   - **Tempo:** pedidos que passam de 60 segundos recebem erro 504, mesmo que o Cloud Run aceite 120. As respostas mais lentas daqui levam uns 20 segundos, quando a cota do Groq está apertada.
 - **Cache:** a API manda `Cache-Control: no-store` nas rotas `/api` (respostas pessoais nunca ficam no CDN), `public, max-age=31536000, immutable` em `/assets` (os nomes têm hash) e `no-cache` no resto.
 - O endereço do Cloud Run continua no ar; o Hosting é só mais uma porta.

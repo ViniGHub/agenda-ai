@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from agenda_ia.calendar_loader import clean_description, format_when, load_events
+from agenda_ia.events.calendar_loader import clean_description, format_when, load_events
 from agenda_ia.config import TZ
 
 

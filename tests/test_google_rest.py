@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest
 
 from agenda_ia.config import TZ
-from agenda_ia.google_link import EVENTS_URL, SEND_URL, TOKEN_URL, GoogleAccessLost, GoogleError, RestGoogle
+from agenda_ia.google.link import EVENTS_URL, SEND_URL, TOKEN_URL, GoogleAccessLost, GoogleError, RestGoogle
 
 
 class Answer:

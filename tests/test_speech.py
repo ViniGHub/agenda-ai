@@ -1,7 +1,7 @@
 import pytest
 
-from agenda_ia.llm import LLMError
-from agenda_ia.speech import UnavailableTranscriber, clean_transcript
+from agenda_ia.ai.llm import LLMError
+from agenda_ia.ai.speech import UnavailableTranscriber, clean_transcript
 
 
 def test_speech_segments_become_the_text():

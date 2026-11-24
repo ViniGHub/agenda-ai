@@ -22,7 +22,7 @@ JOB="agenda-ia-resumo-diario"
 SA_NAME="agenda-ia-agendador"
 SA="$SA_NAME@$PROJECT.iam.gserviceaccount.com"
 HORARIO="${HORARIO:-0 8 * * *}"
-AUDIENCE="agenda-ia-tarefas"  # o mesmo valor de TASKS_AUDIENCE em src/agenda_ia/api.py
+AUDIENCE="agenda-ia-tarefas"  # o mesmo valor de TASKS_AUDIENCE em src/agenda_ia/api/server.py
 
 if [ -z "$PROJECT" ]; then
   echo "Defina o projeto antes: gcloud config set project ID_DO_PROJETO" >&2

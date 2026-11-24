@@ -49,7 +49,7 @@ mensagem de voz → gravada no navegador (com medidor de nível; silêncio nem �
   → transcrever (Whisper no Groq, sem guardar o áudio) → filtro de legendas inventadas
   → o texto entra na conversa como se tivesse sido digitado, com a marca "por áudio"
 
-web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api.py (FastAPI)  ──>  Assistant.ask()
+web/ (React + Vite + TypeScript)  ──HTTP/JSON──>  src/agenda_ia/api/server.py (FastAPI)  ──>  Assistant.ask()
      /api/demo/...   agenda fictícia, aberta: status, agenda, perguntar (e anotar), interpretar, transcrever,
                      compromissos (criar, editar, apagar)
      /api/minha/...  agenda de quem entrou com o Google: as mesmas rotas + importar (.ics), exigem sessão
@@ -78,18 +78,18 @@ Como funciona por dentro:
 
 - **Permissões mínimas, pedidas à parte do login.** O login pede só nome e e-mail. Conectar pede `calendar.events` (ver e editar eventos; não mexe em configurações nem em compartilhamento) e `gmail.send` (só enviar; não lê nenhum e-mail). A tela do Google deixa desmarcar qualquer uma, e cada recurso confere a sua. A volta usa o mesmo endereço do login, então o cliente OAuth continua com uma URI de redirecionamento só.
 - **Token de atualização criptografado.** Para mandar o e-mail sem você estar com o app aberto, o servidor guarda o *refresh token* que o Google devolve. Ele fica no Neon cifrado com Fernet (AES + HMAC), com uma chave derivada (HKDF) do segredo da sessão, então uma cópia do banco sozinha não serve para nada. "Desconectar" revoga o token no Google e apaga daqui; se você revogar pelo lado do Google, o app percebe na próxima chamada e oferece conectar de novo.
-- **O Google é a fonte da verdade** ([`google_sync.py`](src/agenda_ia/google_sync.py)). Uma escrita vai primeiro ao Google; se ele recusar, nada muda aqui. A sincronização lê a janela da agenda (60 dias para trás, 120 para frente) e compara a *etag* (a versão) de cada evento: só o que mudou é recalculado no índice, então sincronizar sem novidade custa uma listagem e nenhum embedding. Um evento que já tinha vindo pelo `.ics` do Google é reconhecido pelo identificador e adotado, sem duplicar.
-- **Ninguém recebe convite.** As pessoas de um compromisso são nomes, não e-mails, e viram uma linha "Com: Ana; Bruno" na descrição do evento, que a leitura transforma de volta em nomes ([`google_events.py`](src/agenda_ia/google_events.py)). Toda escrita vai com `sendUpdates=none`.
-- **O e-mail não passa por IA** ([`daily_email.py`](src/agenda_ia/daily_email.py)): é a lista exata do dia, incluindo o que começou antes e ainda está acontecendo (uma viagem), então não tem como inventar compromisso.
+- **O Google é a fonte da verdade** ([`google/sync.py`](src/agenda_ia/google/sync.py)). Uma escrita vai primeiro ao Google; se ele recusar, nada muda aqui. A sincronização lê a janela da agenda (60 dias para trás, 120 para frente) e compara a *etag* (a versão) de cada evento: só o que mudou é recalculado no índice, então sincronizar sem novidade custa uma listagem e nenhum embedding. Um evento que já tinha vindo pelo `.ics` do Google é reconhecido pelo identificador e adotado, sem duplicar.
+- **Ninguém recebe convite.** As pessoas de um compromisso são nomes, não e-mails, e viram uma linha "Com: Ana; Bruno" na descrição do evento, que a leitura transforma de volta em nomes ([`google/events.py`](src/agenda_ia/google/events.py)). Toda escrita vai com `sendUpdates=none`.
+- **O e-mail não passa por IA** ([`google/daily_email.py`](src/agenda_ia/google/daily_email.py)): é a lista exata do dia, incluindo o que começou antes e ainda está acontecendo (uma viagem), então não tem como inventar compromisso.
 - **Só o agendador dispara o e-mail.** O Cloud Scheduler chama `/api/tarefas/resumo-diario` às 8h (horário de Brasília) com um token OIDC assinado pelo Google, de uma conta de serviço própria e sem nenhum papel. A API confere a assinatura, o público e o e-mail dessa conta. Se o agendador tentar de novo, o e-mail não sai duas vezes: cada conta guarda o dia do último envio.
 - **Sem a biblioteca oficial do Google:** são cinco chamadas HTTPS (listar, criar, alterar e apagar eventos, enviar e-mail) com `requests`, e a imagem não ganha dezenas de MB.
 
 ## Armazenamento
 
-A busca e as respostas falam com uma interface, `EventStore` ([`store.py`](src/agenda_ia/store.py)), que tem duas implementações:
+A busca e as respostas falam com uma interface, `EventStore` ([`storage/store.py`](src/agenda_ia/storage/store.py)), que tem duas implementações:
 
 - **SQLite** com FTS5 e sqlite-vec, em memória: a agenda fictícia, os testes e o uso local. Quem cadastra algo no modo teste ganha uma **cópia só sua** da agenda fictícia (o SQLite copia o banco inteiro, índices incluídos), presa ao cookie de sessão (anônimo, sem login) e apagada depois de duas horas. Assim um visitante não vê nem altera o que outro cadastrou.
-- **Postgres com pgvector** ([`pgstore.py`](src/agenda_ia/pgstore.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
+- **Postgres com pgvector** ([`storage/postgres.py`](src/agenda_ia/storage/postgres.py)), no Neon: a agenda privada, que precisa sobreviver ao Cloud Run desligar. Uma tabela só, e **toda consulta é filtrada pelo dono** (o ID da conta Google), inclusive a exclusão. Busca vetorial com índice HNSW, busca por palavra com `tsvector`, e o mesmo filtro de datas.
 
 Os compromissos têm uma origem: `base` (a agenda fictícia, que não pode ser editada nem apagada), `cadastro` (anotado no formulário ou na conversa), `importado` (veio do `.ics`) ou `google` (veio do Google Agenda conectado). Importar o mesmo arquivo duas vezes não duplica: o par "identificador do evento + início" é único por dono.
 
@@ -102,13 +102,13 @@ Os mesmos testes de contrato rodam nas duas implementações ([`tests/test_store
 A capa do site tem dois caminhos: **"Testar com a agenda fictícia"**, sem conta, e **"Entrar com Google"**, para a agenda privada, que só abre para os e-mails autorizados.
 
 - "Fazer login com o Google" leva à página do Google e volta com um código de uso único, que o servidor troca pelo ID token (JWT assinado pelo Google) usando a chave secreta do cliente OAuth. Um `state` e um `nonce` aleatórios, guardados no cookie, garantem que a volta é do login que este navegador começou. Esse fluxo funciona dentro do app instalado no iPhone, onde a janelinha (popup) do botão oficial não consegue avisar o app. Sem a chave secreta (no desenvolvimento local), a página usa o botão com popup.
-- A API confere a assinatura do token, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`auth.py`](src/agenda_ia/auth.py)).
+- A API confere a assinatura do token, o público (o ID do cliente OAuth deste app), o emissor, a validade e se o e-mail é verificado e está na lista de permitidos ([`api/auth.py`](src/agenda_ia/api/auth.py)).
 - Passou: a API responde com um cookie de sessão assinado, `HttpOnly` (o JavaScript não lê), `Secure` (só HTTPS) e `SameSite=Lax`, válido por 30 dias ("lembrar neste aparelho", para o app no celular não pedir login toda hora). O token do Google não é guardado. O cookie se chama `__session` porque é o único nome que o Firebase Hosting repassa ao servidor; ele também guarda a cópia da demo, e o login tem relógio próprio dentro dele.
 - Toda requisição `POST` precisa do cabeçalho `X-Requested-With: agenda-ia`. Um site de terceiros não consegue enviá-lo sem uma liberação de CORS que esta API nunca dá, o que barra ataques de CSRF.
 - A lista de permitidos e a chave que assina os cookies ficam no Secret Manager, nunca no repositório. Quem sai da lista perde o acesso mesmo com um cookie ainda válido.
 - A agenda privada começa vazia: dá para importar o `.ics` exportado do Google Agenda ou anotar compromissos no formulário. Com o segredo do banco configurado, ela fica no Neon; sem ele, fica em memória e a tela avisa que é temporária.
 
-O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`api.py`](src/agenda_ia/api.py) e os tipos espelhados em [`web/src/types.ts`](web/src/types.ts). Em produção, o FastAPI serve o React já compilado, então é uma origem só (sem CORS) e a chave do Groq nunca chega ao navegador.
+O front e o back só se conhecem pelo contrato JSON: os modelos Pydantic em [`api/server.py`](src/agenda_ia/api/server.py) e os tipos espelhados em [`web/src/api/types.ts`](web/src/api/types.ts). Em produção, o FastAPI serve o React já compilado, então é uma origem só (sem CORS) e a chave do Groq nunca chega ao navegador.
 
 O LLM é o `openai/gpt-oss-120b` no plano gratuito do Groq (8.000 tokens por minuto). Cada pergunta faz duas chamadas e gasta uns 2 a 4 mil tokens.
 
@@ -145,7 +145,7 @@ O botão de microfone ao lado do "Enviar" grava uma mensagem de até um minuto. 
 **Guardas:** o Whisper é conhecido por "ouvir" frases no silêncio, aprendidas de vídeos legendados. No teste com 3 segundos de ruído, ele devolveu "Obrigado." e marcou o trecho como fala com certeza (`no_speech_prob` = 0). Como uma mensagem de voz pode anotar na agenda:
 
 - **Silêncio nem sai do navegador:** um medidor acompanha o volume enquanto grava. Se nada passou do nível de uma voz perto do microfone, a página avisa "Não ouvi nada" e não envia.
-- **Legendas inventadas viram nada:** trechos marcados como não fala e frases de legenda conhecidas ("Obrigado.", "Legendas pela comunidade Amara.org", "Obrigado por assistir") são descartados, e a página pede para falar de novo ([`speech.py`](src/agenda_ia/speech.py)).
+- **Legendas inventadas viram nada:** trechos marcados como não fala e frases de legenda conhecidas ("Obrigado.", "Legendas pela comunidade Amara.org", "Obrigado por assistir") são descartados, e a página pede para falar de novo ([`ai/speech.py`](src/agenda_ia/ai/speech.py)).
 - **Sem prompt de transcrição:** no silêncio, o Whisper pode repetir o próprio prompt, o que viraria um compromisso que ninguém pediu.
 - **Limites:** até um minuto e 2 MB por áudio, 15 áudios a cada 10 minutos por visitante. Aceita os formatos que os navegadores gravam (WebM/Opus no Chrome, Firefox e Android, MP4/AAC no Safari e iPhone).
 
@@ -155,7 +155,7 @@ O áudio vai direto da memória do servidor para o Groq e é descartado: nunca �
 
 No "Novo compromisso", um bilhete ao lado do formulário recebe a frase, por exemplo "almoço com a Ana amanhã meio-dia no Outback". **Preencher** devolve os campos do formulário; os que vieram da frase ficam em marca-texto e os que faltam ("reunião com a padaria semana que vem" não diz o dia nem a hora) ficam marcados com "falta". **Nada é salvo** até a pessoa apertar "Anotar na agenda", que usa a mesma rota e a mesma validação do formulário.
 
-A leitura do compromisso é a mesma da conversa ([`drafting.py`](src/agenda_ia/drafting.py)), exposta em `POST /api/{demo|minha}/interpretar`. Ela usa o mesmo calendário de datas exatas do entendimento das perguntas e a mesma cota de uso (cada frase é uma chamada, cerca de 1.500 tokens). O JSON do modelo não é confiável, então o código confere campo por campo:
+A leitura do compromisso é a mesma da conversa ([`chat/drafting.py`](src/agenda_ia/chat/drafting.py)), exposta em `POST /api/{demo|minha}/interpretar`. Ela usa o mesmo calendário de datas exatas do entendimento das perguntas e a mesma cota de uso (cada frase é uma chamada, cerca de 1.500 tokens). O JSON do modelo não é confiável, então o código confere campo por campo:
 
 - **Um campo ruim não derruba a frase:** data inválida ou a mais de dois anos, horário fora do formato, fim antes do início, participante que não é texto. O campo volta vazio e o formulário pede de novo.
 - **Nada é adivinhado:** frase sem dia certo deixa o dia vazio, em vez de supor "hoje".

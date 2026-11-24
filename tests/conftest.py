@@ -12,7 +12,7 @@ BASE = date(2026, 11, 16)  # a Monday; the sample agenda is built around this we
 
 @pytest.fixture
 def sample_ics(tmp_path: Path) -> Path:
-    from agenda_ia.sample import build
+    from agenda_ia.events.sample import build
 
     path = tmp_path / "agenda.ics"
     path.write_bytes(build(BASE).to_ical())
@@ -47,7 +47,7 @@ class FakeModel:
     """Returns canned replies in order and records what it was sent. An Exception reply is raised."""
 
     def __init__(self, *replies):
-        from agenda_ia.llm import Usage
+        from agenda_ia.ai.llm import Usage
 
         self.replies = list(replies)
         self.sent = []
@@ -67,8 +67,8 @@ class FakeModel:
 @pytest.fixture
 def sample_db(sample_ics, fake_embedder):
     """The sample agenda in an in-memory SqliteEventStore (shareable across threads, like the API's)."""
-    from agenda_ia.calendar_loader import load_events
-    from agenda_ia.store import SqliteEventStore
+    from agenda_ia.events.calendar_loader import load_events
+    from agenda_ia.storage.store import SqliteEventStore
 
     events = load_events(sample_ics, date(2026, 11, 1), date(2027, 2, 1))
     return SqliteEventStore.in_memory(events, fake_embedder.passages([e.search_text() for e in events]), fake_embedder.dim)
@@ -116,7 +116,7 @@ class FakeGoogle:
         return dict(self.items[google_id])
 
     def patch_event(self, event_id, body):
-        from agenda_ia.google_link import GoogleError
+        from agenda_ia.google.link import GoogleError
 
         self._call("patch")
         if event_id not in self.items:

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getConfig, getMe, logout } from './api'
-import { Landing } from './Landing'
-import { useWarmup } from './lib/warmup'
-import type { Config, Me } from './types'
-import { Workspace } from './Workspace'
+import { getConfig, getMe, logout } from '@/api/client'
+import { Landing } from '@/pages/Landing'
+import { useWarmup } from '@/features/startup/warmup'
+import type { Config, Me } from '@/api/types'
+import { Workspace } from '@/pages/Workspace'
 
 type Screen = 'inicio' | 'demo' | 'minha'
 
